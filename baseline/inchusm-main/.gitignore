@@ -1,0 +1,24 @@
+# datasets & external tools (download per docs/reproduce/paper2.md)
+datasets/
+tools/
+
+# experiment outputs (working copies; not committed)
+experiments/results/
+
+# Java build
+inchusm-miner/target/
+*.class
+*.jar
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os / ide
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/

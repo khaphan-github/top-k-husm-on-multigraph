@@ -1,0 +1,3 @@
+numpy               # numeric arrays, label discretization
+pandas              # transaction / snapshot loading
+matplotlib          # figures
