@@ -28,4 +28,15 @@ public final class CMNITable {
         for (Set<Integer> col : images) min = Math.min(min, col.size());
         return min == Integer.MAX_VALUE ? 0 : min;
     }
+
+    /** Compact per-column sizes, e.g. {@code [4,2,2]}, for verbose diagnostics. */
+    public String columnSizes() {
+        StringBuilder sb = new StringBuilder(2 + images.size() * 4);
+        sb.append('[');
+        for (int v = 0; v < images.size(); v++) {
+            if (v > 0) sb.append(',');
+            sb.append(images.get(v).size());
+        }
+        return sb.append(']').toString();
+    }
 }

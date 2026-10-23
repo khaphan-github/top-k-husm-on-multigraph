@@ -1,9 +1,9 @@
 package topk.husm.mg.csp;
 
-import topk.husm.mg.csp.CMNITable;
 import topk.husm.mg.dfs.MgEdge;
 import topk.husm.mg.dfs.VecLabel;
 import topk.husm.mg.graph.MultiGraph;
+import topk.husm.mg.log.MgLog;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -106,7 +106,23 @@ public final class MgOccurrences {
                 }
             }
         }
+        if (MgLog.isTrace()) {
+            MgLog.trace("images: vertices=%d edges=%d mer=%d incremental=%s domains=%s"
+                            + " -> images=%s steps=%d",
+                    n, edges.size(), mer, parentImages != null, sizes(dom), sizes(conf),
+                    solver.steps);
+        }
         return new CMNITable(conf);
+    }
+
+    private static String sizes(List<Set<Integer>> columns) {
+        StringBuilder sb = new StringBuilder(2 + columns.size() * 4);
+        sb.append('[');
+        for (int v = 0; v < columns.size(); v++) {
+            if (v > 0) sb.append(',');
+            sb.append(columns.get(v).size());
+        }
+        return sb.append(']').toString();
     }
 
     private static boolean hasNeighbor(MultiGraph g, int x, int label, VecLabel le) {
@@ -124,6 +140,8 @@ public final class MgOccurrences {
         private final int[] par;
         private final List<List<Nb>> earlier;
         private final int n;
+        private final boolean countSteps;
+        private long steps;
         private int[] phi;
         private Set<Integer> used;
         private int fv;
@@ -136,6 +154,7 @@ public final class MgOccurrences {
             this.par = par;
             this.earlier = earlier;
             this.n = n;
+            this.countSteps = MgLog.isTrace();
         }
 
         int[] solve(int fv, int fx) {
@@ -148,6 +167,7 @@ public final class MgOccurrences {
         }
 
         private boolean rec(int v) {
+            if (countSteps) steps++;
             if (v == n) return true;
             List<Integer> cands;
             if (v == 0) {

@@ -6,6 +6,7 @@ import topk.husm.mg.dfs.MgDFSCode;
 import topk.husm.mg.dfs.MgEdge;
 import topk.husm.mg.dfs.VecLabel;
 import topk.husm.mg.graph.MultiGraph;
+import topk.husm.mg.log.MgLog;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -77,7 +78,13 @@ public final class MgValueCompute {
 
         CMNITable img = MgOccurrences.images(g, labels, edges, mer, parentImages);
         int s = img.cmni();
-        if (s == 0) return new MgEval(0, m, 0, 0, 0, 0, img);
+        if (s == 0) {
+            if (MgLog.isTrace()) {
+                MgLog.trace("eval %s: no support (m=%d, columns=%s)",
+                        code.key(), m, img.columnSizes());
+            }
+            return new MgEval(0, m, 0, 0, 0, 0, img);
+        }
 
         double sumExt = 0;
         for (MgEdge e : edges) {
@@ -110,6 +117,10 @@ public final class MgValueCompute {
         double ivu = sum(maxAll);
         double eu = topSum(maxAll, s);
         double ceu = topSum(maxGe, s);
+        if (MgLog.isTrace()) {
+            MgLog.trace("eval %s: s=%d m=%d u=%.4f ivu=%.4f eu=%.4f ceu=%.4f columns=%s balls=%d",
+                    code.key(), s, m, u, ivu, eu, ceu, img.columnSizes(), maxAll.size());
+        }
         return new MgEval(s, m, u, ivu, eu, ceu, img);
     }
 

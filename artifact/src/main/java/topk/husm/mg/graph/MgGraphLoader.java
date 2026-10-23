@@ -1,5 +1,7 @@
 package topk.husm.mg.graph;
 
+import topk.husm.mg.log.MgLog;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -45,6 +47,9 @@ public final class MgGraphLoader {
 
     public static Loaded load(Path edgesFile, int nlabels,
                               VertexLabelMode labelMode, long seed) throws IOException {
+        long started = System.nanoTime();
+        MgLog.debug("load: file=%s nlabels=%d labelMode=%s seed=%d",
+                edgesFile, nlabels, labelMode, seed);
         List<String> rawLines = Files.readAllLines(edgesFile, StandardCharsets.UTF_8);
         List<String> lines = new ArrayList<>(rawLines.size());
         for (String line : rawLines) if (!line.isBlank()) lines.add(line.strip());
@@ -72,17 +77,25 @@ public final class MgGraphLoader {
         // undirected merge (x=min,y=max), drop self loops, then multi-degree over raw endpoints
         int[] deg = new int[n];
         Map<Long, Map<Integer, Integer>> grouped = new HashMap<>();
+        long selfLoops = 0;
+        long instances = 0;
         for (int i = 0; i < rows; i++) {
             int x = Math.min(rawU[i], rawV[i]);
             int y = Math.max(rawU[i], rawV[i]);
-            if (x == y) continue;
+            if (x == y) {
+                selfLoops++;
+                continue;
+            }
             Map<Integer, Integer> d = grouped.computeIfAbsent(pairKey(x, y), k -> new HashMap<>());
             for (int t : rawLabels[i]) {
                 d.merge(t, 1, Integer::sum);
                 deg[x]++;
                 deg[y]++;
+                instances++;
             }
         }
+        MgLog.debug("load: parsed lines=%d vertices=%d pairs=%d instances=%d selfLoopsDropped=%d",
+                rows, n, grouped.size(), instances, selfLoops);
 
         int[] vlabel;
         if (labelMode == VertexLabelMode.RANDOM) {
@@ -105,7 +118,28 @@ public final class MgGraphLoader {
             int x = (int) (e.getKey() >> 32), y = (int) (e.getKey() & 0xffffffffL);
             pairTypes.put(new PairKey(x, y), e.getValue());
         }
+        logLabelStats(vlabel);
+        MgLog.debug("load: done vertices=%d pairs=%d instances=%d elapsed=%.1fms",
+                n, pairTypes.size(), instances, MgLog.sinceMs(started));
         return new Loaded(n, vlabel, pairTypes);
+    }
+
+    /** Distribution summary so malformed/highly skewed label assignments are easy to spot. */
+    private static void logLabelStats(int[] vlabel) {
+        if (!MgLog.isDebug() || vlabel.length == 0) return;
+        int max = 0;
+        for (int l : vlabel) max = Math.max(max, l);
+        int[] hist = new int[max + 1];
+        for (int l : vlabel) hist[l]++;
+        int distinct = 0, minBucket = Integer.MAX_VALUE, maxBucket = 0;
+        for (int c : hist) {
+            if (c == 0) continue;
+            distinct++;
+            minBucket = Math.min(minBucket, c);
+            maxBucket = Math.max(maxBucket, c);
+        }
+        MgLog.debug("vertex labels: distinct=%d minBucket=%d maxBucket=%d maxLabel=%d",
+                distinct, minBucket, maxBucket, max);
     }
 
     /** Uniform random labels over {@code [0, nlabels)}, independent of structure. */
@@ -163,6 +197,7 @@ public final class MgGraphLoader {
     /** Same as above with an explicit vertex-label mode. */
     public static MultiGraph build(Path edgesFile, int nlabels, long seed, String wdist,
                                    VertexLabelMode labelMode) throws IOException {
+        long started = System.nanoTime();
         Loaded l = load(edgesFile, nlabels, labelMode, seed);
         Random rng = new Random(seed);
         Map<MultiGraph.EdgeKey, double[]> edges = new HashMap<>();
@@ -178,6 +213,31 @@ public final class MgGraphLoader {
                 edges.put(new MultiGraph.EdgeKey(e.getKey().x(), e.getKey().y(), t), draw(rng, wdist, c));
             }
         }
-        return new MultiGraph(l.vlabel(), edges);
+        MultiGraph g = new MultiGraph(l.vlabel(), edges);
+        logGraphStats(g, l, wdist, started);
+        return g;
+    }
+
+    private static void logGraphStats(MultiGraph g, Loaded l, String wdist, long started) {
+        if (!MgLog.isDebug()) return;
+        long instances = 0;
+        int typeKeys = 0;
+        for (Map<Integer, Integer> byType : l.pairTypes().values()) {
+            typeKeys += byType.size();
+            for (int c : byType.values()) instances += c;
+        }
+        double[] ws = g.allWeightsFlat();
+        double min = Double.POSITIVE_INFINITY, max = Double.NEGATIVE_INFINITY, sum = 0;
+        for (double w : ws) {
+            min = Math.min(min, w);
+            max = Math.max(max, w);
+            sum += w;
+        }
+        MgLog.debug("graph built: vertices=%d pairs=%d pairTypes=%d instances=%d"
+                        + " distinctLabels=%d distinctTypes=%d wdist=%s"
+                        + " weights[min=%.3f max=%.3f mean=%.3f] elapsed=%.1fms",
+                g.n(), l.pairTypes().size(), typeKeys, instances,
+                g.distinctVertexLabels().size(), g.distinctTypes().size(), wdist,
+                min, max, ws.length == 0 ? 0 : sum / ws.length, MgLog.sinceMs(started));
     }
 }

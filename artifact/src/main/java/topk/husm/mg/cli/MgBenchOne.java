@@ -4,6 +4,7 @@ import com.sun.management.ThreadMXBean;
 import topk.husm.mg.graph.MgGraphLoader;
 import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.graph.VertexLabelMode;
+import topk.husm.mg.log.MgLog;
 import topk.husm.mg.mining.MgBoundType;
 import topk.husm.mg.mining.MgHUSM;
 
@@ -28,6 +29,7 @@ public final class MgBenchOne {
     public static void main(String[] args) throws Exception {
         Map<String, String> opt = parse(args);
         rejectRemoved(opt);
+        CliLogging.apply(opt);
         String dataset = args[0];
         int k = Integer.parseInt(opt.getOrDefault("--K", "10"));
         int mer = Integer.parseInt(opt.getOrDefault("--mer", "1"));
@@ -46,6 +48,11 @@ public final class MgBenchOne {
         boolean incrementalDomains = incrementalDomains(opt);
 
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, wdist, labelMode);
+        MgLog.debug("bench: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
+                        + " wdist=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d"
+                        + " warmup=%d repeats=%d liveSampleMs=%d",
+                dataset, edgesFile, k, mer, nlabels, labelMode, seed, wdist, boundType,
+                incrementalDomains, prune, maxM, maxV, warmup, repeats, liveSampleMs);
         // no pattern-size cap by default
         MgHUSM.Config cfg = new MgHUSM.Config(k, mer, prune, false,
                 maxM, maxV, boundType, incrementalDomains);
@@ -96,6 +103,11 @@ public final class MgBenchOne {
                     if (u != null) peak += u.getUsed();
                 }
                 peakAll[i - warmup] = peak;
+                MgLog.debug("iteration %d/%d: cpu=%.1fms wall=%.1fms alloc=%d peakHeap=%d"
+                                + " evaluated=%d expanded=%d pruned=%d theta=%.4f",
+                        i - warmup + 1, repeats, cpuMsAll[i - warmup], wallMsAll[i - warmup],
+                        allocAll[i - warmup], peakAll[i - warmup], res.stats.evaluated,
+                        res.stats.expanded, res.stats.pruned, res.stats.thetaFinal);
             }
         }
         bean.setThreadAllocatedMemoryEnabled(prevAlloc);
@@ -160,8 +172,9 @@ public final class MgBenchOne {
     private static Map<String, String> parse(String[] args) {
         Map<String, String> opt = new HashMap<>();
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--")) {
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+            if (args[i].startsWith("--") || args[i].equals("-v")) {
+                if (i + 1 < args.length && !args[i + 1].startsWith("--")
+                        && !args[i].equals("-v")) {
                     opt.put(args[i], args[++i]);
                 } else {
                     opt.put(args[i], "true");

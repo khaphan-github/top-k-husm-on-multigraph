@@ -11,6 +11,7 @@ import java.util.Map;
 public final class MgDumpWeights {
     public static void main(String[] args) throws Exception {
         Map<String, String> opt = parse(args);
+        CliLogging.apply(opt);
         String dataset = args[0];
         int nlabels = Integer.parseInt(opt.getOrDefault("--nlabels", "20"));
         long seed = Long.parseLong(opt.getOrDefault("--seed", "42"));
@@ -38,8 +39,9 @@ public final class MgDumpWeights {
     private static Map<String, String> parse(String[] args) {
         Map<String, String> opt = new java.util.HashMap<>();
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--")) {
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+            if (args[i].startsWith("--") || args[i].equals("-v")) {
+                if (i + 1 < args.length && !args[i + 1].startsWith("--")
+                        && !args[i].equals("-v")) {
                     opt.put(args[i], args[++i]);
                 } else {
                     opt.put(args[i], "true");

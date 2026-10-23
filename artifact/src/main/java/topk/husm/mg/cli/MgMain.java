@@ -3,6 +3,7 @@ package topk.husm.mg.cli;
 import topk.husm.mg.graph.MgGraphLoader;
 import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.graph.VertexLabelMode;
+import topk.husm.mg.log.MgLog;
 import topk.husm.mg.mining.MgBoundType;
 import topk.husm.mg.mining.MgHUSM;
 
@@ -22,7 +23,15 @@ import java.util.Map;
  *           [--noprune] [--max-m N] [--max-v N]
  *           [--processed-dir ../../../../realistic-dataset/processed]
  *           [--edges-file FILE]
+ *           [--verbose [level]|--debug|--trace] [--log-level LEVEL] [--log-file FILE]
  * </pre>
+ *
+ * Verbose diagnostics go to stderr (or {@code --log-file}), never stdout:
+ * <ul>
+ *   <li>{@code INFO} - run config, search summary, elapsed time</li>
+ *   <li>{@code DEBUG} - graph/loading stats, per-expansion candidate counts, top-K heap</li>
+ *   <li>{@code TRACE} - every root/child evaluation, domain sizes, prune decisions</li>
+ * </ul>
  *
  * The input file is a MuGraM-style edge list, one pair per line:
  * {@code src dst label1[,label2,...]}. {@code DATASET} is the file stem inside
@@ -41,6 +50,7 @@ public final class MgMain {
         }
         Map<String, String> opt = parse(args);
         rejectRemoved(opt);
+        CliLogging.apply(opt);
         String dataset = args[0];
         int k = Integer.parseInt(opt.getOrDefault("--K", "10"));
         int mer = Integer.parseInt(opt.getOrDefault("--mer", "1"));
@@ -54,6 +64,10 @@ public final class MgMain {
         int maxM = Integer.parseInt(opt.getOrDefault("--max-m", String.valueOf(Integer.MAX_VALUE)));
         int maxV = Integer.parseInt(opt.getOrDefault("--max-v", String.valueOf(Integer.MAX_VALUE)));
         Path edgesFile = edgesFile(opt, dataset);
+        MgLog.debug("cli: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
+                        + " weight=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d",
+                dataset, edgesFile, k, mer, nlabels, labelMode, seed, weight, boundType,
+                incrementalDomains, prune, maxM, maxV);
 
         long t0load = System.nanoTime();
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, weight, labelMode);
@@ -71,6 +85,12 @@ public final class MgMain {
 
         System.out.printf(Locale.ROOT, "evaluated=%d expanded=%d pruned=%d theta=%.2f time=%.1fs%n",
                 res.stats.evaluated, res.stats.expanded, res.stats.pruned, res.stats.thetaFinal, dt);
+        MgLog.debug("stats: evaluated=%d expanded=%d pruned=%d candidates=%d nonMin=%d cap=%d"
+                        + " zeroSupport=%d roots=%d maxDepth=%d theta=%.4f elapsed=%.1fms",
+                res.stats.evaluated, res.stats.expanded, res.stats.pruned, res.stats.candidates,
+                res.stats.rejectedNonMin, res.stats.rejectedCap, res.stats.zeroSupport,
+                res.stats.roots, res.stats.maxDepth, res.stats.thetaFinal,
+                res.stats.elapsedNanos / 1e6);
 
         res.rows.sort((a, b) -> Double.compare(b.u(), a.u()));
         int shown = 0;
@@ -118,8 +138,9 @@ public final class MgMain {
     private static Map<String, String> parse(String[] args) {
         Map<String, String> opt = new HashMap<>();
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--")) {
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+            if (args[i].startsWith("--") || args[i].equals("-v")) {
+                if (i + 1 < args.length && !args[i + 1].startsWith("--")
+                        && !args[i].equals("-v")) {
                     opt.put(args[i], args[++i]);
                 } else {
                     opt.put(args[i], "true");
@@ -146,6 +167,11 @@ public final class MgMain {
                                 [--incremental-domains true|false] [--no-incremental-domains]
                                 [--noprune] [--max-m N] [--max-v N]
                                 [--processed-dir ../../../../realistic-dataset/processed]
-                                [--edges-file FILE]""");
+                                [--edges-file FILE]
+                                [--verbose [level]|--debug|--trace] [--log-level LEVEL] [--log-file FILE]
+
+                logging: -v/--verbose = DEBUG (--verbose 2 = TRACE), --trace = TRACE,
+                         --log-level off|error|warn|info|debug|trace, log file via --log-file FILE
+                         (default stream: stderr; env MG_LOG_LEVEL is used when no flag is given)""");
     }
 }
