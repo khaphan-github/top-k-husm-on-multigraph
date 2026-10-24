@@ -27,14 +27,28 @@ public final class MgHUSM {
     /** Emit a DEBUG progress line every this many evaluated patterns (verbose runs only). */
     private static final long PROGRESS_EVERY = 100_000L;
 
-    /** @param k Top-K size; @param keepRows log all evaluated patterns (tests);
-     *  @param maxM max total multiplicity; @param maxV max pattern vertices;
-     *  @param boundType pruning bound; @param incrementalDomains reuse parent image tables. */
+    /** @param k Top-K size (unused when {@code enableTopK} is false); @param keepRows log all
+     *  evaluated patterns (tests); @param maxM max total multiplicity; @param maxV max pattern
+     *  vertices; @param boundType pruning bound; @param incrementalDomains reuse parent image
+     *  tables; @param enableTopK keep only the K best patterns and prune against theta; when
+     *  false, every pattern with {@code u >= minUtil} is kept; @param minUtil minimum utility
+     *  (0 = none); with Top-K enabled it is an extra floor below which patterns are dropped. */
     public record Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
-                         MgBoundType boundType, boolean incrementalDomains) {
+                         MgBoundType boundType, boolean incrementalDomains, boolean enableTopK,
+                         double minUtil) {
+        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
+                      MgBoundType boundType, boolean incrementalDomains, boolean enableTopK) {
+            this(k, mer, prune, keepRows, maxM, maxV, boundType, incrementalDomains, enableTopK, 0);
+        }
+
+        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
+                      MgBoundType boundType, boolean incrementalDomains) {
+            this(k, mer, prune, keepRows, maxM, maxV, boundType, incrementalDomains, true, 0);
+        }
+
         public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
                       MgBoundType boundType) {
-            this(k, mer, prune, keepRows, maxM, maxV, boundType, true);
+            this(k, mer, prune, keepRows, maxM, maxV, boundType, true, true, 0);
         }
 
         public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV) {
@@ -106,8 +120,17 @@ public final class MgHUSM {
         return new MgHUSM(g, cfg).run();
     }
 
+    /** Theta is the max of the Top-K threshold and {@code minUtil}; 0 when neither is set. */
     private double theta() {
-        return heap.size() >= cfg.k() ? heap.peek() : 0;
+        double floor = cfg.minUtil();
+        return cfg.enableTopK() && heap.size() >= cfg.k()
+                ? Math.max(floor, heap.peek())
+                : floor;
+    }
+
+    /** True when a pattern utility reaches the configured minimum. */
+    private boolean meetsMinUtil(double u) {
+        return u + BOUND_EPS >= cfg.minUtil();
     }
 
     private void record(MgDFSCode code, MgEval ev) {
@@ -115,12 +138,15 @@ public final class MgHUSM {
         if (cfg.keepRows()) {
             result.rows.add(new Row(uval, code, ev.m(), ev.s(), ev.bound(cfg.boundType())));
         }
-        if (ev.s() > 0) {
-            heap.add(uval);
-            if (heap.size() > cfg.k()) heap.poll();
+        if (ev.s() > 0 && meetsMinUtil(uval)) {
+            if (cfg.enableTopK()) {
+                heap.add(uval);
+                if (heap.size() > cfg.k()) heap.poll();
+            }
             if (!cfg.keepRows() && uval > 0 && uval >= theta()) {
                 result.top.add(new TopEntry(uval, code));
-                if (result.top.size() > 4 * cfg.k() + 64) { // drop entries below theta
+                if (cfg.enableTopK() && result.top.size() > 4 * cfg.k() + 64) {
+                    // drop entries below theta
                     double th = theta();
                     result.top.removeIf(t -> t.u() < th);
                 }
@@ -223,10 +249,12 @@ public final class MgHUSM {
 
     private Result run() {
         long t0 = System.nanoTime();
-        MgLog.info("mine start: k=%d mer=%d prune=%s bound=%s incrementalDomains=%s"
-                        + " maxM=%d maxV=%d keepRows=%s vertices=%d seedTypes=%d",
-                cfg.k(), cfg.mer(), cfg.prune(), cfg.boundType(), cfg.incrementalDomains(),
-                cfg.maxM(), cfg.maxV(), cfg.keepRows(), g.n(), alpha.forwardTypes().size());
+        MgLog.info("mine start: k=%d topk=%s minUtil=%.4f mer=%d prune=%s bound=%s"
+                        + " incrementalDomains=%s maxM=%d maxV=%d keepRows=%s vertices=%d"
+                        + " seedTypes=%d",
+                cfg.k(), cfg.enableTopK(), cfg.minUtil(), cfg.mer(), cfg.prune(),
+                cfg.boundType(), cfg.incrementalDomains(), cfg.maxM(), cfg.maxV(),
+                cfg.keepRows(), g.n(), alpha.forwardTypes().size());
         List<Cand> roots = new ArrayList<>();
         for (SeedType st : alpha.forwardTypes()) {
             MgDFSCode code = MgDFSCode.single(new MgEdgeTuple(0, 1, st.la(), st.le(), st.lb()));
@@ -266,7 +294,7 @@ public final class MgHUSM {
             expand(c.code(), c.ev(), images);
         }
         result.stats.thetaFinal = theta();
-        if (!cfg.keepRows()) {
+        if (cfg.enableTopK() && !cfg.keepRows()) {
             double th = result.stats.thetaFinal;
             result.top.removeIf(t -> t.u() < th);
         }
@@ -285,18 +313,23 @@ public final class MgHUSM {
                 result.stats.thetaFinal, heap.size(), result.rows.size(),
                 result.stats.elapsedNanos / 1e6);
         if (!MgLog.isDebug()) return;
-        List<Double> ascending = new ArrayList<>(heap);
-        ascending.sort(null);
-        MgLog.debug("top-k heap ascending: %s", ascending);
-        if (!result.top.isEmpty()) {
-            MgLog.debug("top entries retained: %d (k=%d)", result.top.size(), cfg.k());
+        if (!cfg.enableTopK()) {
+            MgLog.debug("top-k disabled: theta=minUtil=%.4f, %d entry(ies) retained",
+                    cfg.minUtil(), result.rows.isEmpty() ? result.top.size() : result.rows.size());
+        } else {
+            List<Double> ascending = new ArrayList<>(heap);
+            ascending.sort(null);
+            MgLog.debug("top-k heap ascending: %s", ascending);
+            if (!result.top.isEmpty()) {
+                MgLog.debug("top entries retained: %d (k=%d)", result.top.size(), cfg.k());
+            }
         }
         if (!result.rows.isEmpty()) {
             List<Row> topRows = new ArrayList<>(result.rows);
             topRows.sort((a, b) -> Double.compare(b.u(), a.u()));
             int shown = 0;
             for (Row r : topRows) {
-                if (shown++ >= cfg.k()) break;
+                if (cfg.enableTopK() && shown++ >= cfg.k()) break;
                 MgLog.debug("row u=%.4f s=%d m=%d bound=%.4f %s",
                         r.u(), r.s(), r.m(), r.bound(), r.code().key());
             }

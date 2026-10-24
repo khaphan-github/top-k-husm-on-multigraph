@@ -47,17 +47,21 @@ public final class MgBenchOne {
         String wdist = opt.getOrDefault("--wdist", "gaussian");
         MgBoundType boundType = MgBoundType.from(opt.getOrDefault("--ieu-bound", "ivu"));
         boolean incrementalDomains = incrementalDomains(opt);
+        boolean enableTopK = topKEnabled(opt);
+        double minUtil = minUtil(opt);
         Path reportFile = MgReport.requested(opt) ? MgReport.resolve(opt, "mg-bench", dataset) : null;
 
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, wdist, labelMode);
-        MgLog.debug("bench: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
-                        + " wdist=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d"
-                        + " warmup=%d repeats=%d liveSampleMs=%d memLoggerMs=%d",
-                dataset, edgesFile, k, mer, nlabels, labelMode, seed, wdist, boundType,
-                incrementalDomains, prune, maxM, maxV, warmup, repeats, liveSampleMs, memLoggerMs);
+        MgLog.debug("bench: dataset=%s edgesFile=%s K=%d enableTopK=%s minUtil=%.4f mer=%d"
+                        + " nlabels=%d labelMode=%s seed=%d wdist=%s ieuBound=%s"
+                        + " incrementalDomains=%s prune=%s maxM=%d maxV=%d warmup=%d repeats=%d"
+                        + " liveSampleMs=%d memLoggerMs=%d",
+                dataset, edgesFile, k, enableTopK, minUtil, mer, nlabels, labelMode, seed,
+                wdist, boundType, incrementalDomains, prune, maxM, maxV, warmup, repeats,
+                liveSampleMs, memLoggerMs);
         // no pattern-size cap by default
         MgHUSM.Config cfg = new MgHUSM.Config(k, mer, prune, false,
-                maxM, maxV, boundType, incrementalDomains);
+                maxM, maxV, boundType, incrementalDomains, enableTopK, minUtil);
 
         long liveBaseline = liveSampleMs > 0 ? LiveHeapSampler.liveNow() : 0;
         long peakLive = 0;
@@ -133,12 +137,13 @@ public final class MgBenchOne {
         long peakBytes = medianLong(peakAll);
 
         String json = String.format(Locale.ROOT,
-                "{\"dataset\":\"%s\",\"K\":%d,\"mer\":%d,\"nlabels\":%d,\"wdist\":\"%s\",\"label_mode\":\"%s\",\"ieu_bound\":\"%s\",\"incremental_domains\":%s,\"max_m\":%d,\"max_v\":%d,\"evaluated\":%d,"
+                "{\"dataset\":\"%s\",\"K\":%d,\"enable_top_k\":%s,\"min_util\":%.4f,\"mer\":%d,\"nlabels\":%d,\"wdist\":\"%s\",\"label_mode\":\"%s\",\"ieu_bound\":\"%s\",\"incremental_domains\":%s,\"max_m\":%d,\"max_v\":%d,\"evaluated\":%d,"
                         + "\"expanded\":%d,\"pruned\":%d,\"theta\":%.4f,\"cpu_ms\":%.2f,\"wall_ms\":%.2f,\"alloc_bytes\":%d,"
                         + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,"
                         + "\"mem_logger_peak_bytes\":%d,\"mem_logger_interval_ms\":%d,\"mem_logger_samples\":%d,"
                         + "\"warmup\":%d,\"repeats\":%d}",
-                dataset, k, mer, nlabels, wdist, labelMode, boundType, incrementalDomains, maxM, maxV,
+                dataset, k, enableTopK, minUtil, mer, nlabels, wdist, labelMode, boundType,
+                incrementalDomains, maxM, maxV,
                 last.stats.evaluated, last.stats.expanded, last.stats.pruned, last.stats.thetaFinal,
                 cpuMs, wallMs, allocBytes, peakBytes, liveBaseline, peakLive,
                 memLoggerPeak, memLoggerMs, memLoggerSamples, warmup, repeats);
@@ -173,6 +178,23 @@ public final class MgBenchOne {
         return Boolean.parseBoolean(opt.getOrDefault("--incremental-domains", "true"));
     }
 
+    /**
+     * Top-K is enabled by default. {@code --enable-top-k false} (alias {@code --no-top-k})
+     * mines every pattern with support &gt; 0 instead of only the K best ones.
+     */
+    private static boolean topKEnabled(Map<String, String> opt) {
+        if (opt.containsKey("--no-top-k")) return false;
+        return Boolean.parseBoolean(opt.getOrDefault("--enable-top-k", "true"));
+    }
+
+    /** Minimum utility; {@code --minutil} is accepted as an alias. 0 = no threshold. */
+    private static double minUtil(Map<String, String> opt) {
+        String raw = opt.getOrDefault("--min-util", opt.getOrDefault("--minutil", "0"));
+        double value = Double.parseDouble(raw);
+        if (value < 0) throw new IllegalArgumentException("--min-util must be >= 0, got " + raw);
+        return value;
+    }
+
     /** SPMF-style sampler interval; 0 = off, bare {@code --mem-logger} means 10 ms. */
     private static long memLoggerMs(Map<String, String> opt) {
         String value = opt.get("--mem-logger-ms");
@@ -205,13 +227,17 @@ public final class MgBenchOne {
     private static Map<String, String> parse(String[] args) {
         Map<String, String> opt = new HashMap<>();
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--") || args[i].equals("-v")) {
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")
-                        && !args[i].equals("-v")) {
-                    opt.put(args[i], args[++i]);
-                } else {
-                    opt.put(args[i], "true");
-                }
+            String arg = args[i];
+            if (!arg.startsWith("--") && !arg.equals("-v")) continue;
+            int eq = arg.indexOf('=');
+            if (arg.startsWith("--") && eq > 2) {
+                // --key=value
+                opt.put(arg.substring(0, eq), arg.substring(eq + 1));
+            } else if (i + 1 < args.length && !args[i + 1].startsWith("--")
+                    && !arg.equals("-v")) {
+                opt.put(arg, args[++i]);
+            } else {
+                opt.put(arg, "true");
             }
         }
         return opt;

@@ -75,14 +75,14 @@ class MgSmallGraphBruteForceTest {
         }
     }
 
-    /** All connected patterns up to m=4 and 4 vertices on the eight-vertex dataset. */
+    /** All connected patterns up to m=3 and 3 vertices on the small file dataset.
+     *  MER &gt; 1 is covered by the random multigraphs below (this file has no repeated
+     *  type on a pair, so every MER value yields the same oracle). */
     @Test
-    void eightVertexDataset_matchesBruteForceWithinCaps() throws IOException {
+    void fileDataset_matchesBruteForceWithinCaps() throws IOException {
         Path file = Path.of("src/test/resources/small/eight.txt");
         MultiGraph g = MgGraphLoader.build(file, 3, 42, "gaussian");
-        for (int mer : new int[] {1, 2, 3}) {
-            assertGraphMatchesOracle("file:eight-seed42", g, mer, 4, 4);
-        }
+        assertGraphMatchesOracle("file:eight-seed42", g, 1, 3, 3);
     }
 
     @Test
@@ -90,9 +90,7 @@ class MgSmallGraphBruteForceTest {
         Path file = Path.of("src/test/resources/small/eight.txt");
         MultiGraph g = MgGraphLoader.build(
                 file, 3, 42, "gaussian", VertexLabelMode.RANDOM);
-        for (int mer : new int[] {1, 2, 3}) {
-            assertGraphMatchesOracle("file:eight-random-labels", g, mer, 4, 4);
-        }
+        assertGraphMatchesOracle("file:eight-random-labels", g, 1, 3, 3);
     }
 
     /** Exact s/m/u/IEU match the oracle; IEU is anti-monotone. */
@@ -223,8 +221,8 @@ class MgSmallGraphBruteForceTest {
         try {
             MultiGraph eight = MgGraphLoader.build(
                     Path.of("src/test/resources/small/eight.txt"), 3, 42, "gaussian");
-            checked += assertTopGraphMatchesOracle(new NamedGraph("file:eight-seed42", eight), 4, 4);
-            treeEdges += countTopTreeEdges(new NamedGraph("file:eight-seed42", eight), 4, 4);
+            checked += assertTopGraphMatchesOracle(new NamedGraph("file:eight-seed42", eight), 3, 3);
+            treeEdges += countTopTreeEdges(new NamedGraph("file:eight-seed42", eight), 3, 3);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

@@ -21,6 +21,10 @@ import java.util.Map;
  *
  * The report is written only after the run has finished, so an interrupted run never leaves
  * a partial file. Console output is unchanged; the file is meant for later inspection.
+ *
+ * When {@code --out} is omitted, {@code MgMain} writes the report to
+ * {@code artifact/output/} (or {@code output/} when the working directory is already
+ * {@code artifact/}); set {@code MG_OUTPUT_DIR} to override that folder.
  */
 final class MgReport {
 
@@ -28,6 +32,25 @@ final class MgReport {
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private MgReport() {
+    }
+
+    /** Output folder used when {@code --out} is not given. */
+    static Path defaultDir() {
+        String env = System.getenv("MG_OUTPUT_DIR");
+        if (env != null && !env.isBlank()) return Path.of(env);
+        Path cwd = Path.of("").toAbsolutePath();
+        Path name = cwd.getFileName();
+        return "artifact".equals(name == null ? "" : name.toString())
+                ? cwd.resolve("output")
+                : cwd.resolve("artifact").resolve("output");
+    }
+
+    /** Auto-named report under {@link #defaultDir()} (creates the folder). */
+    static Path defaultReport(String prefix, String dataset) throws IOException {
+        Path dir = defaultDir();
+        Files.createDirectories(dir);
+        return dir.resolve(prefix + "-" + safe(dataset) + "-"
+                + LocalDateTime.now().format(STAMP) + ".txt");
     }
 
     /** Raw {@code --out}/{@code --out-file} value, or {@code null}. */

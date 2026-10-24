@@ -23,6 +23,7 @@ import java.util.Map;
  *           [--label-mode random|degree]
  *           [--weight gaussian|lognormal] [--ieu-bound ivu|eu|ceu]
  *           [--incremental-domains true|false] [--no-incremental-domains]
+ *           [--enable-top-k true|false] [--no-top-k] [--min-util U]
  *           [--noprune] [--max-m N] [--max-v N]
  *           [--processed-dir ../../../../realistic-dataset/processed]
  *           [--edges-file FILE]
@@ -69,16 +70,20 @@ public final class MgMain {
         String weight = opt.getOrDefault("--weight", "gaussian");
         MgBoundType boundType = MgBoundType.from(opt.getOrDefault("--ieu-bound", "ivu"));
         boolean incrementalDomains = incrementalDomains(opt);
+        boolean enableTopK = topKEnabled(opt);
+        double minUtil = minUtil(opt);
         boolean prune = !opt.containsKey("--noprune");
         int maxM = Integer.parseInt(opt.getOrDefault("--max-m", String.valueOf(Integer.MAX_VALUE)));
         int maxV = Integer.parseInt(opt.getOrDefault("--max-v", String.valueOf(Integer.MAX_VALUE)));
         Path edgesFile = edgesFile(opt, dataset);
-        Path reportFile = MgReport.requested(opt) ? MgReport.resolve(opt, "mg-run", dataset) : null;
-        MgLog.debug("cli: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
-                        + " weight=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d"
-                        + " report=%s",
-                dataset, edgesFile, k, mer, nlabels, labelMode, seed, weight, boundType,
-                incrementalDomains, prune, maxM, maxV, reportFile);
+        Path reportFile = MgReport.requested(opt)
+                ? MgReport.resolve(opt, "mg-run", dataset)
+                : MgReport.defaultReport("mg-run", dataset);
+        MgLog.debug("cli: dataset=%s edgesFile=%s K=%d enableTopK=%s minUtil=%.4f mer=%d"
+                        + " nlabels=%d labelMode=%s seed=%d weight=%s ieuBound=%s"
+                        + " incrementalDomains=%s prune=%s maxM=%d maxV=%d report=%s",
+                dataset, edgesFile, k, enableTopK, minUtil, mer, nlabels, labelMode, seed,
+                weight, boundType, incrementalDomains, prune, maxM, maxV, reportFile);
 
         long t0load = System.nanoTime();
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, weight, labelMode);
@@ -86,13 +91,14 @@ public final class MgMain {
 
         int pairs = countPairs(g);
         System.out.printf(Locale.ROOT,
-                "%s: n=%d pairs=%d K=%d MER=%d labels=%d labelMode=%s weight=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d (load=%.0fms)%n",
-                dataset, g.n(), pairs, k, mer, nlabels, labelMode, weight, boundType,
-                incrementalDomains, prune, maxM, maxV, loadMs);
+                "%s: n=%d pairs=%d K=%d topK=%s minUtil=%.4f MER=%d labels=%d labelMode=%s weight=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d (load=%.0fms)%n",
+                dataset, g.n(), pairs, k, enableTopK, minUtil, mer, nlabels, labelMode, weight,
+                boundType, incrementalDomains, prune, maxM, maxV, loadMs);
 
         long t0 = System.nanoTime();
         MgHUSM.Result res = MgHUSM.mine(g, new MgHUSM.Config(
-                k, mer, prune, true, maxM, maxV, boundType, incrementalDomains));
+                k, mer, prune, true, maxM, maxV, boundType, incrementalDomains, enableTopK,
+                minUtil));
         double dt = (System.nanoTime() - t0) / 1e9;
 
         System.out.printf(Locale.ROOT, "evaluated=%d expanded=%d pruned=%d theta=%.2f time=%.1fs%n",
@@ -107,8 +113,8 @@ public final class MgMain {
         res.rows.sort((a, b) -> Double.compare(b.u(), a.u()));
         int shown = 0;
         for (MgHUSM.Row row : res.rows) {
-            if (shown >= k) break;
-            if (row.s() <= 0) continue;
+            if (enableTopK && shown >= k) break;
+            if (row.s() <= 0 || row.u() + 1e-9 < minUtil) continue;
             System.out.printf(Locale.ROOT, "  u=%10.2f s=%4d m=%d bound=%12.2f  %s%n",
                     row.u(), row.s(), row.m(), row.bound(), row.code());
             shown++;
@@ -117,7 +123,7 @@ public final class MgMain {
         if (reportFile != null) {
             List<String> report = buildReport(opt, dataset, edgesFile, g.n(), pairs, k, mer,
                     nlabels, labelMode.toString(), seed, weight, boundType.toString(),
-                    incrementalDomains, prune, maxM, maxV, loadMs, dt, res);
+                    incrementalDomains, enableTopK, minUtil, prune, maxM, maxV, loadMs, dt, res);
             MgReport.write(reportFile, report);
             System.err.printf(Locale.ROOT, "report written: %s%n",
                     reportFile.toAbsolutePath().normalize());
@@ -129,19 +135,20 @@ public final class MgMain {
                                             Path edgesFile, int vertices, int pairs, int k,
                                             int mer, int nlabels, String labelMode, long seed,
                                             String weight, String boundType,
-                                            boolean incrementalDomains, boolean prune,
-                                            int maxM, int maxV, double loadMs, double elapsedS,
-                                            MgHUSM.Result res) {
+                                            boolean incrementalDomains, boolean enableTopK,
+                                            double minUtil, boolean prune, int maxM, int maxV,
+                                            double loadMs, double elapsedS, MgHUSM.Result res) {
         List<String> r = new ArrayList<>();
         r.add("# Top-K HUSM multigraph run report");
         r.add("generated: " + Instant.now());
         r.add("dataset: " + dataset);
         r.add("edges_file: " + edgesFile.toAbsolutePath().normalize());
         r.add(String.format(Locale.ROOT,
-                "config: K=%d mer=%d nlabels=%d label_mode=%s seed=%d weight=%s"
-                        + " ieu_bound=%s incremental_domains=%s prune=%s max_m=%d max_v=%d",
-                k, mer, nlabels, labelMode, seed, weight, boundType, incrementalDomains,
-                prune, maxM, maxV));
+                "config: K=%d enable_top_k=%s min_util=%.4f mer=%d nlabels=%d label_mode=%s"
+                        + " seed=%d weight=%s ieu_bound=%s incremental_domains=%s prune=%s"
+                        + " max_m=%d max_v=%d",
+                k, enableTopK, minUtil, mer, nlabels, labelMode, seed, weight, boundType,
+                incrementalDomains, prune, maxM, maxV));
         r.add(String.format(Locale.ROOT, "graph: vertices=%d pairs=%d", vertices, pairs));
         r.add(String.format(Locale.ROOT, "load_ms: %.1f", loadMs));
         r.add("");
@@ -156,23 +163,25 @@ public final class MgMain {
                 res.stats.thetaFinal, elapsedS));
         r.add(String.format(Locale.ROOT, "topk_set_size=%d", MgHUSM.topkSet(res).size()));
         r.add("");
-        r.add("# top-" + k + " patterns (u descending; code = DFS code)");
+        r.add(enableTopK
+                ? "# top-" + k + " patterns (u descending; code = DFS code)"
+                : "# all patterns with s > 0 (top-k disabled; u descending; code = DFS code)");
         r.add("# u\t\ts\tm\tbound\tcode");
         int shown = 0;
         for (MgHUSM.Row row : res.rows) {
-            if (shown >= k) break;
-            if (row.s() <= 0) continue;
+            if (enableTopK && shown >= k) break;
+            if (row.s() <= 0 || row.u() + 1e-9 < minUtil) continue;
             r.add(rowLine(row));
             shown++;
         }
         if (shown == 0) r.add("# (no pattern with support)");
         if (MgReport.includeAll(opt)) {
             r.add("");
-            r.add("# all evaluated patterns with s > 0 (u descending)");
+            r.add("# all evaluated patterns with s > 0 and u >= min_util (u descending)");
             r.add("# u\t\ts\tm\tbound\tcode");
             int total = 0;
             for (MgHUSM.Row row : res.rows) {
-                if (row.s() <= 0) continue;
+                if (row.s() <= 0 || row.u() + 1e-9 < minUtil) continue;
                 r.add(rowLine(row));
                 total++;
             }
@@ -207,6 +216,23 @@ public final class MgMain {
         return Boolean.parseBoolean(opt.getOrDefault("--incremental-domains", "true"));
     }
 
+    /**
+     * Top-K is enabled by default. {@code --enable-top-k false} (alias {@code --no-top-k})
+     * mines every pattern with support &gt; 0 instead of only the K best ones.
+     */
+    private static boolean topKEnabled(Map<String, String> opt) {
+        if (opt.containsKey("--no-top-k")) return false;
+        return Boolean.parseBoolean(opt.getOrDefault("--enable-top-k", "true"));
+    }
+
+    /** Minimum utility; {@code --minutil} is accepted as an alias. 0 = no threshold. */
+    private static double minUtil(Map<String, String> opt) {
+        String raw = opt.getOrDefault("--min-util", opt.getOrDefault("--minutil", "0"));
+        double value = Double.parseDouble(raw);
+        if (value < 0) throw new IllegalArgumentException("--min-util must be >= 0, got " + raw);
+        return value;
+    }
+
     private static void rejectRemoved(Map<String, String> opt) {
         for (String f : new String[] {"--R", "--bound", "--agg", "--model"}) {
             if (opt.containsKey(f)) {
@@ -221,13 +247,17 @@ public final class MgMain {
     private static Map<String, String> parse(String[] args) {
         Map<String, String> opt = new HashMap<>();
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--") || args[i].equals("-v")) {
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")
-                        && !args[i].equals("-v")) {
-                    opt.put(args[i], args[++i]);
-                } else {
-                    opt.put(args[i], "true");
-                }
+            String arg = args[i];
+            if (!arg.startsWith("--") && !arg.equals("-v")) continue;
+            int eq = arg.indexOf('=');
+            if (arg.startsWith("--") && eq > 2) {
+                // --key=value
+                opt.put(arg.substring(0, eq), arg.substring(eq + 1));
+            } else if (i + 1 < args.length && !args[i + 1].startsWith("--")
+                    && !arg.equals("-v")) {
+                opt.put(arg, args[++i]);
+            } else {
+                opt.put(arg, "true");
             }
         }
         return opt;
@@ -248,6 +278,7 @@ public final class MgMain {
                                 [--label-mode random|degree]
                                 [--weight gaussian|lognormal] [--ieu-bound ivu|eu|ceu]
                                 [--incremental-domains true|false] [--no-incremental-domains]
+                                [--enable-top-k true|false] [--no-top-k] [--min-util U]
                                 [--noprune] [--max-m N] [--max-v N]
                                 [--processed-dir ../../../../realistic-dataset/processed]
                                 [--edges-file FILE]
@@ -256,7 +287,9 @@ public final class MgMain {
 
                 results: --out FILE writes config, statistics and the top-K patterns to a
                          UTF-8 text file after the run; --out DIR/ auto-names the file;
-                         --out-all also lists every evaluated pattern with s > 0.
+                         without --out the report goes to artifact/output/ (MG_OUTPUT_DIR
+                         overrides the folder); --out-all also lists every evaluated
+                         pattern with s > 0.
                 logging: -v/--verbose = DEBUG (--verbose 2 = TRACE), --trace = TRACE,
                          --log-level off|error|warn|info|debug|trace, log file via --log-file FILE
                          (default stream: stderr; env MG_LOG_LEVEL is used when no flag is given)""");

@@ -5,6 +5,7 @@ import topk.husm.mg.dfs.MgEdge;
 import topk.husm.mg.dfs.MgMinCode;
 import topk.husm.mg.dfs.VecLabel;
 import topk.husm.mg.graph.MultiGraph;
+import topk.husm.mg.mining.MgBoundType;
 import topk.husm.mg.mining.MgHUSM;
 import org.junit.jupiter.api.Test;
 
@@ -153,6 +154,58 @@ class MgHUSMEquivalenceTest {
             }
         }
         assertTrue(runs >= 20);
+    }
+
+    /** enableTopK=false keeps every pattern with s > 0, like an unbounded K. */
+    @Test
+    void topKDisabledEqualsUnboundedK() {
+        int runs = 0;
+        for (long seed : SEEDS) {
+            MultiGraph g = MgTestGraphs.randomData(seed, 3, 2, 2, 0, 2, 2);
+            for (int mer : MERS) {
+                MgHUSM.Result all = MgHUSM.mine(g, new MgHUSM.Config(
+                        1_000_000_000, mer, false, false, Integer.MAX_VALUE,
+                        Integer.MAX_VALUE, MgBoundType.IVU, true));
+                MgHUSM.Result noTopK = MgHUSM.mine(g, new MgHUSM.Config(
+                        1, mer, false, false, Integer.MAX_VALUE,
+                        Integer.MAX_VALUE, MgBoundType.IVU, true, false));
+                assertEquals(0.0, noTopK.stats.thetaFinal, "seed=" + seed + " mer=" + mer);
+                assertEquals(MgHUSM.topkSet(all), MgHUSM.topkSet(noTopK),
+                        "seed=" + seed + " mer=" + mer);
+                runs++;
+            }
+        }
+        assertTrue(runs >= 10);
+    }
+
+    /** With Top-K off, minUtil keeps exactly the patterns with u >= threshold. */
+    @Test
+    void minUtilSelectsThresholdedSubset() {
+        int runs = 0;
+        for (long seed : SEEDS) {
+            MultiGraph g = MgTestGraphs.randomData(seed, 3, 2, 2, 0, 2, 2);
+            for (int mer : MERS) {
+                MgHUSM.Result all = MgHUSM.mine(g, new MgHUSM.Config(
+                        1, mer, false, false, Integer.MAX_VALUE, Integer.MAX_VALUE,
+                        MgBoundType.IVU, true, false, 0));
+                Map<String, Double> full = MgHUSM.topkSet(all);
+                for (double minUtil : new double[] {4.0, 6.0}) {
+                    MgHUSM.Result cut = MgHUSM.mine(g, new MgHUSM.Config(
+                            1, mer, true, false, Integer.MAX_VALUE, Integer.MAX_VALUE,
+                            MgBoundType.IVU, true, false, minUtil));
+                    Map<String, Double> expected = new HashMap<>();
+                    for (Map.Entry<String, Double> e : full.entrySet()) {
+                        if (e.getValue() + 1e-9 >= minUtil) expected.put(e.getKey(), e.getValue());
+                    }
+                    assertEquals(expected, MgHUSM.topkSet(cut),
+                            "seed=" + seed + " mer=" + mer + " minUtil=" + minUtil);
+                    assertEquals(minUtil, cut.stats.thetaFinal, 1e-9,
+                            "theta must equal the minUtil floor");
+                    runs++;
+                }
+            }
+        }
+        assertTrue(runs >= 8);
     }
 
     // ---- helpers ------------------------------------------------------------------
