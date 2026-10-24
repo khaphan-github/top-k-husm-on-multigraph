@@ -1,6 +1,8 @@
 package topk.husm.mg.cli;
 
+import topk.husm.mg.graph.EsvCache;
 import topk.husm.mg.log.MgLog;
+import topk.husm.mg.log.MgProfile;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -20,6 +22,8 @@ import java.util.Map;
  *   --trace               TRACE (per-pattern evaluation traces -- very large)
  *   --log-level LEVEL     explicit level, wins over the convenience flags
  *   --log-file FILE       append log lines to FILE instead of stderr
+ *   --profile [off|wall|full]
+ *                         per-step wall/CPU time and allocated bytes (default full)
  * </pre>
  *
  * The environment variable {@code MG_LOG_LEVEL} is honoured by default when no flag is given.
@@ -60,6 +64,23 @@ final class CliLogging {
         }
 
         if (level != null) MgLog.setLevel(level);
+
+        String profile = opt.get("--profile");
+        if (profile != null) {
+            MgProfile.Mode parsed = MgProfile.parse(profile.equals("true") ? "full" : profile);
+            MgProfile.setMode(parsed);
+            // An explicit profiling request must be visible even without --log-level.
+            if (MgProfile.isEnabled() && level == null && MgLog.level() == MgLog.Level.OFF) {
+                MgLog.setLevel(MgLog.Level.INFO);
+            }
+        }
+
+        // O2 ablation: --no-esv-cache (or --esv-cache false) recomputes the per-image ESV term.
+        if (opt.containsKey("--no-esv-cache")) {
+            EsvCache.setEnabled(false);
+        } else if (opt.containsKey("--esv-cache")) {
+            EsvCache.setEnabled(!isFalse(opt.get("--esv-cache")));
+        }
 
         if (MgLog.isDebug()) {
             MgLog.debug("logging configured level=%s target=%s env=%s",

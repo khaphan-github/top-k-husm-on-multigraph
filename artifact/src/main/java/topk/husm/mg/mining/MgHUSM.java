@@ -8,6 +8,7 @@ import topk.husm.mg.dfs.MgMinCode;
 import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.graph.MultiGraph.SeedType;
 import topk.husm.mg.log.MgLog;
+import topk.husm.mg.log.MgProfile;
 import topk.husm.mg.mining.MgValueCompute.MgEval;
 
 import java.util.ArrayList;
@@ -155,27 +156,34 @@ public final class MgHUSM {
     }
 
     private void expand(MgDFSCode code, MgEval ev, CMNITable images) {
+        MgProfile.begin();
         result.stats.expanded++;
         int depth = code.size();
         if (depth > result.stats.maxDepth) result.stats.maxDepth = depth;
         double thetaIn = theta();
         if (MgLog.isTrace()) {
-            MgLog.trace("expand depth=%d code=%s m=%d s=%d u=%.4f [ivu=%.4f eu=%.4f ceu=%.4f]"
-                            + " theta=%.4f bound=%s",
-                    depth, code.key(), ev.m(), ev.s(), ev.u(), ev.ivu(), ev.eu(), ev.ceu(),
-                    thetaIn, cfg.boundType());
+            MgLog.trace("expand depth=%d code=%s m=%d s=%d u=%.4f [%s=%.4f] theta=%.4f",
+                    depth, code.key(), ev.m(), ev.s(), ev.u(), cfg.boundType(),
+                    ev.bound(cfg.boundType()), thetaIn);
         }
         if (ev.m() >= cfg.maxM()) {
             if (MgLog.isTrace()) MgLog.trace("  stop: m=%d reached maxM=%d", ev.m(), cfg.maxM());
+            MgProfile.end("expand");
             return;
         }
         List<Cand> kids = new ArrayList<>();
         int generated = 0, zeroSupport = 0, nonMin = 0;
-        for (MgEdgeTuple e : MgExtensions.rightmost(code, alpha)) {
+        MgProfile.begin();
+        java.util.LinkedHashSet<MgEdgeTuple> extensions = MgExtensions.rightmost(code, alpha);
+        MgProfile.end("expand/extensions");
+        for (MgEdgeTuple e : extensions) {
             generated++;
             result.stats.candidates++;
             MgDFSCode child = code.extend(e);
-            if (!MgMinCode.isMin(child)) {
+            MgProfile.begin();
+            boolean minCode = MgMinCode.isMin(child);
+            MgProfile.end("expand/minCode");
+            if (!minCode) {
                 nonMin++;
                 result.stats.rejectedNonMin++;
                 if (MgLog.isTrace()) MgLog.trace("  skip (not min): %s", child.key());
@@ -189,8 +197,10 @@ public final class MgHUSM {
                 }
                 continue;
             }
+            MgProfile.begin();
             MgEval cev = MgValueCompute.evaluate(g, child, cfg.mer(),
-                    cfg.incrementalDomains() ? images : null);
+                    cfg.incrementalDomains() ? images : null, cfg.boundType());
+            MgProfile.end("expand/evaluate");
             result.stats.evaluated++;
             if (cev.s() == 0) {
                 zeroSupport++;
@@ -214,8 +224,10 @@ public final class MgHUSM {
                     depth, code.key(), generated, kids.size(), nonMin, zeroSupport, thetaIn, heap.size());
         }
         maybeProgress();
+        MgProfile.begin();
         kids.sort((a, b) -> Double.compare(b.ev().bound(cfg.boundType()),
                 a.ev().bound(cfg.boundType())));
+        MgProfile.end("expand/sort");
         for (Cand c : kids) {
             double bound = c.ev().bound(cfg.boundType());
             if (cfg.prune() && bound < theta() - BOUND_EPS) {
@@ -232,6 +244,7 @@ public final class MgHUSM {
             }
             expand(c.code(), c.ev(), c.ev().images());
         }
+        MgProfile.end("expand");
     }
 
     /** Periodic progress line so long runs can be watched without TRACE volume. */
@@ -249,6 +262,7 @@ public final class MgHUSM {
 
     private Result run() {
         long t0 = System.nanoTime();
+        MgProfile.begin();
         MgLog.info("mine start: k=%d topk=%s minUtil=%.4f mer=%d prune=%s bound=%s"
                         + " incrementalDomains=%s maxM=%d maxV=%d keepRows=%s vertices=%d"
                         + " seedTypes=%d",
@@ -256,23 +270,26 @@ public final class MgHUSM {
                 cfg.boundType(), cfg.incrementalDomains(), cfg.maxM(), cfg.maxV(),
                 cfg.keepRows(), g.n(), alpha.forwardTypes().size());
         List<Cand> roots = new ArrayList<>();
+        MgProfile.begin();
         for (SeedType st : alpha.forwardTypes()) {
             MgDFSCode code = MgDFSCode.single(new MgEdgeTuple(0, 1, st.la(), st.le(), st.lb()));
             if (code.m() > cfg.maxM() || code.nVertices() > cfg.maxV()) {
                 result.stats.rejectedCap++;
                 continue;
             }
-            MgEval ev = MgValueCompute.evaluate(g, code, cfg.mer());
+            MgEval ev = MgValueCompute.evaluate(g, code, cfg.mer(), null, cfg.boundType());
             result.stats.evaluated++;
             if (ev.s() == 0) result.stats.zeroSupport++;
             record(code, ev);
             if (MgLog.isTrace()) {
-                MgLog.trace("root %s m=%d s=%d u=%.4f [ivu=%.4f eu=%.4f ceu=%.4f] theta=%.4f",
-                        code.key(), ev.m(), ev.s(), ev.u(), ev.ivu(), ev.eu(), ev.ceu(), theta());
+                MgLog.trace("root %s m=%d s=%d u=%.4f [%s=%.4f] theta=%.4f",
+                        code.key(), ev.m(), ev.s(), ev.u(), cfg.boundType(),
+                        ev.bound(cfg.boundType()), theta());
             }
             // avoid retaining root image tables; rebuild them on expansion
             if (ev.s() > 0) roots.add(new Cand(code, ev.withoutImages()));
         }
+        MgProfile.end("mine/roots");
         result.stats.roots = roots.size();
         MgLog.debug("roots: kept=%d theta=%.4f heap=%d", roots.size(), theta(), heap.size());
         maybeProgress();
@@ -288,11 +305,14 @@ public final class MgHUSM {
                 }
                 continue;
             }
+            MgProfile.begin();
             CMNITable images = !cfg.incrementalDomains() || c.ev().m() >= cfg.maxM()
                     ? null
                     : MgOccurrences.images(g, c.code().labels(), c.code().patternEdges(), cfg.mer());
+            MgProfile.end("mine/rootImages");
             expand(c.code(), c.ev(), images);
         }
+        MgProfile.end("mine");
         result.stats.thetaFinal = theta();
         if (cfg.enableTopK() && !cfg.keepRows()) {
             double th = result.stats.thetaFinal;
@@ -300,6 +320,8 @@ public final class MgHUSM {
         }
         result.stats.elapsedNanos = System.nanoTime() - t0;
         logSummary();
+        MgProfile.logReport("profile (per step: calls / wall_ms / alloc_MB); mode="
+                + MgProfile.mode());
         return result;
     }
 

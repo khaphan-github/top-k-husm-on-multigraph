@@ -7,10 +7,10 @@ import topk.husm.mg.dfs.MgEdge;
 import topk.husm.mg.dfs.VecLabel;
 import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.log.MgLog;
+import topk.husm.mg.log.MgProfile;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Utility {@code u(P) = CMNI(P) * mean external utility} plus the three pruning
@@ -72,11 +72,23 @@ public final class MgValueCompute {
      *  present, child domains are seeded from it. */
     public static MgEval evaluate(MultiGraph g, MgDFSCode code, int mer,
                                   CMNITable parentImages) {
+        return evaluate(g, code, mer, parentImages, null);
+    }
+
+    /**
+     * Evaluation variant used by the miner: only the bound that pruning will actually
+     * compare is computed ({@code neededBound}), which skips one list plus two sorts per
+     * evaluation. {@code neededBound == null} computes all three bounds (test/oracle path).
+     */
+    public static MgEval evaluate(MultiGraph g, MgDFSCode code, int mer,
+                                  CMNITable parentImages, MgBoundType neededBound) {
         int[] labels = code.labels();
         List<MgEdge> edges = code.patternEdges();
         int m = code.m();
 
+        MgProfile.begin();
         CMNITable img = MgOccurrences.images(g, labels, edges, mer, parentImages);
+        MgProfile.end("eval/occurrences");
         int s = img.cmni();
         if (s == 0) {
             if (MgLog.isTrace()) {
@@ -88,54 +100,54 @@ public final class MgValueCompute {
 
         double sumExt = 0;
         for (MgEdge e : edges) {
-            for (VecLabel.Comp c : e.le().comps()) {
+            VecLabel le = e.le();
+            for (int i = 0, k = le.nComps(); i < k; i++) {
+                VecLabel.Comp c = le.comp(i);
                 sumExt += (double) c.mult() * g.extOf(c.type());
             }
         }
         double u = (double) s * (sumExt / m);
 
-        int labelI0 = labels[0];
-        List<Double> maxAll = new ArrayList<>();
-        List<Double> maxGe = new ArrayList<>();
-        for (int r : img.images(0)) {
-            Set<Integer> ball = g.ball(r, mer);
-            double bestAll = Double.NEGATIVE_INFINITY;
-            double bestGe = Double.NEGATIVE_INFINITY;
-            for (int x : ball) {
-                for (int y : g.neighbors(x)) {
-                    if (x >= y || !ball.contains(y)) continue;
-                    double ex = g.extOmega(x, y);
-                    if (ex > bestAll) bestAll = ex;
-                    if (g.vlabel(x) >= labelI0 && g.vlabel(y) >= labelI0 && ex > bestGe) {
-                        bestGe = ex;
-                    }
+        boolean needIvu = neededBound == null || neededBound == MgBoundType.IVU;
+        boolean needEu = neededBound == null || neededBound == MgBoundType.EU;
+        boolean needCeu = neededBound == null || neededBound == MgBoundType.CEU;
+
+        double ivu = 0, eu = 0, ceu = 0;
+        int balls = 0;
+        if (needIvu || needEu || needCeu) {
+            int labelI0 = labels[0];
+            List<Double> maxAll = needEu ? new ArrayList<>(s) : null;
+            List<Double> maxGe = needCeu ? new ArrayList<>(s) : null;
+            MgProfile.begin();
+            for (int r : img.images(0)) {
+                // O2 lives inside EsvCache: this call reads the memo unless --no-esv-cache is set.
+                double bestAll = g.ballBestExt(r, mer);
+                if (bestAll == Double.NEGATIVE_INFINITY) continue;
+                balls++;
+                if (needIvu) ivu += bestAll;
+                if (needEu) maxAll.add(bestAll);
+                if (needCeu) {
+                    double bestGe = g.ballBestExtAtLeast(r, mer, labelI0);
+                    if (bestGe != Double.NEGATIVE_INFINITY) maxGe.add(bestGe);
                 }
             }
-            if (bestAll != Double.NEGATIVE_INFINITY) maxAll.add(bestAll);
-            if (bestGe != Double.NEGATIVE_INFINITY) maxGe.add(bestGe);
+            MgProfile.end("eval/bounds");
+            if (needEu) eu = topSum(maxAll, s);
+            if (needCeu) ceu = topSum(maxGe, s);
         }
-        double ivu = sum(maxAll);
-        double eu = topSum(maxAll, s);
-        double ceu = topSum(maxGe, s);
         if (MgLog.isTrace()) {
             MgLog.trace("eval %s: s=%d m=%d u=%.4f ivu=%.4f eu=%.4f ceu=%.4f columns=%s balls=%d",
-                    code.key(), s, m, u, ivu, eu, ceu, img.columnSizes(), maxAll.size());
+                    code.key(), s, m, u, ivu, eu, ceu, img.columnSizes(), balls);
         }
         return new MgEval(s, m, u, ivu, eu, ceu, img);
     }
 
-    private static double sum(List<Double> values) {
-        double total = 0;
-        for (double v : values) total += v;
-        return total;
-    }
-
+    /** Sum of the {@code k} largest values; sorts {@code values} in place (caller owns it). */
     private static double topSum(List<Double> values, int k) {
         if (k <= 0 || values.isEmpty()) return 0;
-        List<Double> copy = new ArrayList<>(values);
-        copy.sort(java.util.Comparator.reverseOrder());
+        values.sort(java.util.Comparator.reverseOrder());
         double total = 0;
-        for (int i = 0; i < Math.min(k, copy.size()); i++) total += copy.get(i);
+        for (int i = 0; i < Math.min(k, values.size()); i++) total += values.get(i);
         return total;
     }
 }

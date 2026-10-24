@@ -4,6 +4,7 @@ import topk.husm.mg.dfs.MgEdge;
 import topk.husm.mg.dfs.VecLabel;
 import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.log.MgLog;
+import topk.husm.mg.log.MgProfile;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -32,6 +33,7 @@ public final class MgOccurrences {
      */
     public static CMNITable images(MultiGraph g, int[] labels, List<MgEdge> edges, int mer,
                                    CMNITable parentImages) {
+        MgProfile.begin();
         int n = labels.length;
         @SuppressWarnings("unchecked")
         List<Nb>[] nbr = new List[n];
@@ -45,6 +47,7 @@ public final class MgOccurrences {
         // Other vertices keep their parent domains.
         MgEdge added = (parentImages != null && !edges.isEmpty())
                 ? edges.get(edges.size() - 1) : null;
+        MgProfile.begin();
         List<Set<Integer>> dom = new ArrayList<>(n);
         for (int v = 0; v < n; v++) {
             Set<Integer> d = new HashSet<>();
@@ -53,7 +56,7 @@ public final class MgOccurrences {
                     int other = v == added.a() ? added.b() : added.a();
                     int otherLabel = labels[other];
                     for (int x : parentImages.images(v)) {
-                        if (hasNeighbor(g, x, otherLabel, added.le())) d.add(x);
+                        if (g.hasNeighborMatching(x, otherLabel, added.le())) d.add(g.boxedVertex(x));
                     }
                 } else {
                     d.addAll(parentImages.images(v));
@@ -62,13 +65,14 @@ public final class MgOccurrences {
                 outer:
                 for (int x : g.byLabel(labels[v])) {
                     for (Nb nb : nbr[v]) {
-                        if (!hasNeighbor(g, x, labels[nb.w()], nb.le())) continue outer;
+                        if (!g.hasNeighborMatching(x, labels[nb.w()], nb.le())) continue outer;
                     }
-                    d.add(x);
+                    d.add(g.boxedVertex(x));
                 }
             }
             dom.add(d);
         }
+        MgProfile.end("occ/domains");
 
         int[] par = new int[n]; // par[0] unused
         List<List<Nb>> earlier = new ArrayList<>(n);
@@ -95,23 +99,26 @@ public final class MgOccurrences {
         for (int v = 0; v < n; v++) conf.add(new HashSet<>());
 
         Solver solver = new Solver(g, mer, dom, par, earlier, n);
+        MgProfile.begin();
         for (int v = 0; v < n; v++) {
             for (int x : new ArrayList<>(dom.get(v))) {
                 if (conf.get(v).contains(x)) continue;
                 int[] sol = solver.solve(v, x);
                 if (sol == null) {
-                    dom.get(v).remove(x);
+                    dom.get(v).remove(g.boxedVertex(x));
                 } else {
-                    for (int u = 0; u < n; u++) conf.get(u).add(sol[u]);
+                    for (int u = 0; u < n; u++) conf.get(u).add(g.boxedVertex(sol[u]));
                 }
             }
         }
+        MgProfile.end("occ/solve");
         if (MgLog.isTrace()) {
             MgLog.trace("images: vertices=%d edges=%d mer=%d incremental=%s domains=%s"
                             + " -> images=%s steps=%d",
                     n, edges.size(), mer, parentImages != null, sizes(dom), sizes(conf),
                     solver.steps);
         }
+        MgProfile.end("occ");
         return new CMNITable(conf);
     }
 
@@ -125,13 +132,6 @@ public final class MgOccurrences {
         return sb.append(']').toString();
     }
 
-    private static boolean hasNeighbor(MultiGraph g, int x, int label, VecLabel le) {
-        for (int y : g.neighbors(x)) {
-            if (g.vlabel(y) == label && g.vecOk(x, y, le)) return true;
-        }
-        return false;
-    }
-
     /** Backtracking search for one MER-valid occurrence with phi[fv]=fx. */
     private static final class Solver {
         private final MultiGraph g;
@@ -141,9 +141,8 @@ public final class MgOccurrences {
         private final List<List<Nb>> earlier;
         private final int n;
         private final boolean countSteps;
+        private final int[] phi;
         private long steps;
-        private int[] phi;
-        private Set<Integer> used;
         private int fv;
         private int fx;
 
@@ -155,51 +154,66 @@ public final class MgOccurrences {
             this.earlier = earlier;
             this.n = n;
             this.countSteps = MgLog.isTrace();
+            this.phi = new int[n];
         }
 
         int[] solve(int fv, int fx) {
             this.fv = fv;
             this.fx = fx;
-            phi = new int[n];
             java.util.Arrays.fill(phi, -1);
-            used = new HashSet<>();
             return rec(0) ? phi.clone() : null;
         }
 
         private boolean rec(int v) {
             if (countSteps) steps++;
             if (v == n) return true;
-            List<Integer> cands;
-            if (v == 0) {
-                if (fv == 0) {
-                    cands = dom.get(0).contains(fx) ? List.of(fx) : List.of();
-                } else {
-                    cands = new ArrayList<>();
-                    for (int r : g.ball(fx, mer)) if (dom.get(0).contains(r)) cands.add(r);
-                }
-            } else {
-                Set<Integer> bl = g.ball(phi[0], mer);
-                cands = new ArrayList<>();
-                for (int y : g.neighbors(phi[par[v]])) {
-                    if (dom.get(v).contains(y) && bl.contains(y) && !used.contains(y)) cands.add(y);
-                }
-                if (v == fv) cands.removeIf(y -> y != fx);
-                List<Nb> ea = earlier.get(v);
-                if (!ea.isEmpty()) {
-                    cands.removeIf(y -> {
-                        for (Nb nb : ea) if (!g.vecOk(phi[nb.w()], y, nb.le())) return true;
-                        return false;
-                    });
-                }
-            }
-            for (int y : cands) {
+            if (v == 0) return recFirst();
+            // The ball of phi[0] is the active membership view (set once at depth 1).
+            if (v == 1) g.ballView(phi[0], mer);
+            int[] ys = g.neighborsOf(phi[par[v]]);
+            for (int i = 0; i < ys.length; i++) {
+                int y = ys[i];
+                if (v == fv && y != fx) continue;
+                if (containsPhi(y, v)) continue;
+                if (!g.inBallView(y)) continue;
+                if (!dom.get(v).contains(g.boxedVertex(y))) continue;
+                if (!earlierOk(v, y)) continue;
                 phi[v] = y;
-                used.add(y);
                 if (rec(v + 1)) return true;
-                used.remove(y);
                 phi[v] = -1;
             }
             return false;
+        }
+
+        private boolean recFirst() {
+            if (fv == 0) {
+                if (!dom.get(0).contains(fx)) return false;
+                phi[0] = fx;
+                if (rec(1)) return true;
+                phi[0] = -1;
+                return false;
+            }
+            // phi[0] may map to any in-ball vertex, in cached ball order.
+            for (int r : g.ballView(fx, mer)) {
+                if (!dom.get(0).contains(r)) continue;
+                phi[0] = r;
+                if (rec(1)) return true;
+                phi[0] = -1;
+            }
+            return false;
+        }
+
+        /** True when {@code y} is already used by one of phi[0..upto-1]. */
+        private boolean containsPhi(int y, int upto) {
+            for (int i = 0; i < upto; i++) if (phi[i] == y) return true;
+            return false;
+        }
+
+        private boolean earlierOk(int v, int y) {
+            for (Nb nb : earlier.get(v)) {
+                if (!g.vecOk(phi[nb.w()], y, nb.le())) return false;
+            }
+            return true;
         }
     }
 }
