@@ -46,6 +46,7 @@ public final class MgBenchOne {
         String wdist = opt.getOrDefault("--wdist", "gaussian");
         MgBoundType boundType = MgBoundType.from(opt.getOrDefault("--ieu-bound", "ivu"));
         boolean incrementalDomains = incrementalDomains(opt);
+        Path reportFile = MgReport.requested(opt) ? MgReport.resolve(opt, "mg-bench", dataset) : null;
 
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, wdist, labelMode);
         MgLog.debug("bench: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
@@ -117,13 +118,19 @@ public final class MgBenchOne {
         long allocBytes = medianLong(allocAll);
         long peakBytes = medianLong(peakAll);
 
-        System.out.printf(Locale.ROOT,
+        String json = String.format(Locale.ROOT,
                 "{\"dataset\":\"%s\",\"K\":%d,\"mer\":%d,\"nlabels\":%d,\"wdist\":\"%s\",\"label_mode\":\"%s\",\"ieu_bound\":\"%s\",\"incremental_domains\":%s,\"max_m\":%d,\"max_v\":%d,\"evaluated\":%d,"
                         + "\"expanded\":%d,\"pruned\":%d,\"theta\":%.4f,\"cpu_ms\":%.2f,\"wall_ms\":%.2f,\"alloc_bytes\":%d,"
-                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,\"warmup\":%d,\"repeats\":%d}%n",
+                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,\"warmup\":%d,\"repeats\":%d}",
                 dataset, k, mer, nlabels, wdist, labelMode, boundType, incrementalDomains, maxM, maxV,
                 last.stats.evaluated, last.stats.expanded, last.stats.pruned, last.stats.thetaFinal,
                 cpuMs, wallMs, allocBytes, peakBytes, liveBaseline, peakLive, warmup, repeats);
+        System.out.println(json);
+        if (reportFile != null) {
+            MgReport.write(reportFile, json + System.lineSeparator());
+            System.err.printf(Locale.ROOT, "report written: %s%n",
+                    reportFile.toAbsolutePath().normalize());
+        }
     }
 
     private static double median(double[] a) {

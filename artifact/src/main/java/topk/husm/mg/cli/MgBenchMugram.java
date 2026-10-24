@@ -45,6 +45,8 @@ public final class MgBenchMugram {
         
         MgBoundType boundType = MgBoundType.from(opt.getOrDefault("--ieu-bound", "ivu"));
         boolean incrementalDomains = incrementalDomains(opt);
+        Path reportFile = MgReport.requested(opt)
+                ? MgReport.resolve(opt, "mg-bench-mugram", "mugram-dblp") : null;
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, wdist, labelMode);
         MgLog.debug("bench(mugram): edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
                         + " wdist=%s ieuBound=%s incrementalDomains=%s prune=%s warmup=%d repeats=%d",
@@ -110,13 +112,19 @@ public final class MgBenchMugram {
         long allocBytes = medianLong(allocAll);
         long peakBytes = medianLong(peakAll);
 
-        System.out.printf(Locale.ROOT,
+        String json = String.format(Locale.ROOT,
                 "{\"dataset\":\"mugram-dblp\",\"K\":%d,\"mer\":%d,\"wdist\":\"%s\",\"label_mode\":\"%s\",\"ieu_bound\":\"%s\",\"incremental_domains\":%s,\"evaluated\":%d,"
                         + "\"expanded\":%d,\"pruned\":%d,\"theta\":%.4f,\"cpu_ms\":%.2f,\"alloc_bytes\":%d,"
-                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,\"warmup\":%d,\"repeats\":%d}%n",
+                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,\"warmup\":%d,\"repeats\":%d}",
                 k, mer, wdist, labelMode, boundType, incrementalDomains, last.stats.evaluated,
                 last.stats.expanded, last.stats.pruned, last.stats.thetaFinal, cpuMs, allocBytes,
                 peakBytes, liveBaseline, peakLive, warmup, repeats);
+        System.out.println(json);
+        if (reportFile != null) {
+            MgReport.write(reportFile, json + System.lineSeparator());
+            System.err.printf(Locale.ROOT, "report written: %s%n",
+                    reportFile.toAbsolutePath().normalize());
+        }
     }
 
     private static double median(double[] a) {
