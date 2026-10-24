@@ -43,6 +43,7 @@ public final class MgBenchOne {
         int maxV = Integer.parseInt(opt.getOrDefault("--max-v", String.valueOf(Integer.MAX_VALUE)));
         boolean prune = Boolean.parseBoolean(opt.getOrDefault("--prune", "true"));
         long liveSampleMs = Long.parseLong(opt.getOrDefault("--live-sample-ms", "0")); // 0 = off
+        long memLoggerMs = memLoggerMs(opt);
         String wdist = opt.getOrDefault("--wdist", "gaussian");
         MgBoundType boundType = MgBoundType.from(opt.getOrDefault("--ieu-bound", "ivu"));
         boolean incrementalDomains = incrementalDomains(opt);
@@ -51,9 +52,9 @@ public final class MgBenchOne {
         MultiGraph g = MgGraphLoader.build(edgesFile, nlabels, seed, wdist, labelMode);
         MgLog.debug("bench: dataset=%s edgesFile=%s K=%d mer=%d nlabels=%d labelMode=%s seed=%d"
                         + " wdist=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d"
-                        + " warmup=%d repeats=%d liveSampleMs=%d",
+                        + " warmup=%d repeats=%d liveSampleMs=%d memLoggerMs=%d",
                 dataset, edgesFile, k, mer, nlabels, labelMode, seed, wdist, boundType,
-                incrementalDomains, prune, maxM, maxV, warmup, repeats, liveSampleMs);
+                incrementalDomains, prune, maxM, maxV, warmup, repeats, liveSampleMs, memLoggerMs);
         // no pattern-size cap by default
         MgHUSM.Config cfg = new MgHUSM.Config(k, mer, prune, false,
                 maxM, maxV, boundType, incrementalDomains);
@@ -75,6 +76,8 @@ public final class MgBenchOne {
         double[] wallMsAll = new double[repeats];
         long[] allocAll = new long[repeats];
         long[] peakAll = new long[repeats];
+        long memLoggerPeak = 0;
+        long memLoggerSamples = 0;
         for (int i = 0; i < warmup + repeats; i++) {
             for (MemoryPoolMXBean p : heapPools) {
                 try {
@@ -88,7 +91,16 @@ public final class MgBenchOne {
             long wallBefore = System.nanoTime();
             LiveHeapSampler sampler = liveSampleMs > 0 ? new LiveHeapSampler(liveSampleMs) : null;
             if (sampler != null) sampler.start();
+            MemLoggerSampler memLogger = memLoggerMs > 0 ? new MemLoggerSampler(memLoggerMs) : null;
+            if (memLogger != null) memLogger.start();
             MgHUSM.Result res = MgHUSM.mine(g, cfg);
+            if (memLogger != null) {
+                long peak = memLogger.stop();
+                if (i >= warmup) {
+                    memLoggerPeak = Math.max(memLoggerPeak, peak);
+                    memLoggerSamples = memLogger.samples();
+                }
+            }
             if (sampler != null) peakLive = Math.max(peakLive, sampler.stop());
             long cpuAfter = bean.getCurrentThreadCpuTime();
             long allocAfter = bean.getThreadAllocatedBytes(tid);
@@ -105,10 +117,12 @@ public final class MgBenchOne {
                 }
                 peakAll[i - warmup] = peak;
                 MgLog.debug("iteration %d/%d: cpu=%.1fms wall=%.1fms alloc=%d peakHeap=%d"
+                                + " memLoggerPeak=%d memLoggerSamples=%d"
                                 + " evaluated=%d expanded=%d pruned=%d theta=%.4f",
                         i - warmup + 1, repeats, cpuMsAll[i - warmup], wallMsAll[i - warmup],
-                        allocAll[i - warmup], peakAll[i - warmup], res.stats.evaluated,
-                        res.stats.expanded, res.stats.pruned, res.stats.thetaFinal);
+                        allocAll[i - warmup], peakAll[i - warmup], memLoggerPeak,
+                        memLoggerSamples, res.stats.evaluated, res.stats.expanded,
+                        res.stats.pruned, res.stats.thetaFinal);
             }
         }
         bean.setThreadAllocatedMemoryEnabled(prevAlloc);
@@ -121,10 +135,13 @@ public final class MgBenchOne {
         String json = String.format(Locale.ROOT,
                 "{\"dataset\":\"%s\",\"K\":%d,\"mer\":%d,\"nlabels\":%d,\"wdist\":\"%s\",\"label_mode\":\"%s\",\"ieu_bound\":\"%s\",\"incremental_domains\":%s,\"max_m\":%d,\"max_v\":%d,\"evaluated\":%d,"
                         + "\"expanded\":%d,\"pruned\":%d,\"theta\":%.4f,\"cpu_ms\":%.2f,\"wall_ms\":%.2f,\"alloc_bytes\":%d,"
-                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,\"warmup\":%d,\"repeats\":%d}",
+                        + "\"peak_heap_bytes\":%d,\"live_baseline_bytes\":%d,\"peak_live_bytes\":%d,"
+                        + "\"mem_logger_peak_bytes\":%d,\"mem_logger_interval_ms\":%d,\"mem_logger_samples\":%d,"
+                        + "\"warmup\":%d,\"repeats\":%d}",
                 dataset, k, mer, nlabels, wdist, labelMode, boundType, incrementalDomains, maxM, maxV,
                 last.stats.evaluated, last.stats.expanded, last.stats.pruned, last.stats.thetaFinal,
-                cpuMs, wallMs, allocBytes, peakBytes, liveBaseline, peakLive, warmup, repeats);
+                cpuMs, wallMs, allocBytes, peakBytes, liveBaseline, peakLive,
+                memLoggerPeak, memLoggerMs, memLoggerSamples, warmup, repeats);
         System.out.println(json);
         if (reportFile != null) {
             MgReport.write(reportFile, json + System.lineSeparator());
@@ -154,6 +171,15 @@ public final class MgBenchOne {
     private static boolean incrementalDomains(Map<String, String> opt) {
         if (opt.containsKey("--no-incremental-domains")) return false;
         return Boolean.parseBoolean(opt.getOrDefault("--incremental-domains", "true"));
+    }
+
+    /** SPMF-style sampler interval; 0 = off, bare {@code --mem-logger} means 10 ms. */
+    private static long memLoggerMs(Map<String, String> opt) {
+        String value = opt.get("--mem-logger-ms");
+        if (value == null && opt.containsKey("--mem-logger")) value = "10";
+        if (value == null) return 0;
+        if (value.equals("true")) return 10;
+        return Math.max(0, Long.parseLong(value));
     }
 
     /** Explicit {@code --edges-file}, else {@code <processed-dir>/<dataset>.txt}. */
