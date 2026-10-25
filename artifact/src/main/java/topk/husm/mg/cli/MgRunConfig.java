@@ -19,7 +19,7 @@ import java.nio.file.Path;
 record MgRunConfig(String dataset, Path edgesFile, int k, int mer, int nlabels,
                    VertexLabelMode labelMode, long seed, String weight, MgBoundType boundType,
                    boolean incrementalDomains, boolean enableTopK, double minUtil, boolean prune,
-                   int maxM, int maxV, String reportPrefix) {
+                   int maxMultiplicity, int maxVertices, String reportPrefix) {
 
     /** Which search variant an entry point drives. */
     enum Mode {
@@ -56,7 +56,7 @@ record MgRunConfig(String dataset, Path edgesFile, int k, int mer, int nlabels,
 
     /** The mining engine configuration matching this run. */
     MgHUSM.Config mining() {
-        return new MgHUSM.Config(k, mer, prune, true, maxM, maxV, boundType,
+        return new MgHUSM.Config(k, mer, prune, true, maxMultiplicity, maxVertices, boundType,
                 incrementalDomains, enableTopK, minUtil);
     }
 

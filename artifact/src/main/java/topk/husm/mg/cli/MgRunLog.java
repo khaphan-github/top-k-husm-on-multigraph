@@ -25,8 +25,8 @@ final class MgRunLog {
                         + " incrementalDomains=%s prune=%s maxM=%d maxV=%d report=%s",
                 cfg.dataset(), cfg.edgesFile(), cfg.k(), cfg.enableTopK(), cfg.minUtil(),
                 cfg.mer(), cfg.nlabels(), cfg.labelMode(), cfg.seed(), cfg.weight(),
-                cfg.boundType(), cfg.incrementalDomains(), cfg.prune(), cfg.maxM(), cfg.maxV(),
-                reportFile);
+                cfg.boundType(), cfg.incrementalDomains(), cfg.prune(), cfg.maxMultiplicity(),
+                cfg.maxVertices(), reportFile);
     }
 
     /** All search counters at DEBUG, including the ones the console summary omits. */
@@ -35,7 +35,7 @@ final class MgRunLog {
                         + " zeroSupport=%d roots=%d maxDepth=%d theta=%.4f elapsed=%.1fms",
                 res.stats.evaluated, res.stats.expanded, res.stats.pruned, res.stats.candidates,
                 res.stats.rejectedNonMin, res.stats.rejectedCap, res.stats.zeroSupport,
-                res.stats.roots, res.stats.maxDepth, res.stats.thetaFinal,
+                res.stats.roots, res.stats.maxDepth, res.stats.finalThreshold,
                 res.stats.elapsedNanos / 1e6);
     }
 

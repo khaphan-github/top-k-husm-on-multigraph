@@ -45,41 +45,57 @@ public final class MgValueCompute {
      * evaluation. One buffer per bound is enough: {@link MgHUSM} mines on a single
      * thread, so {@link #evaluate} is never entered concurrently.
      */
-    private static double[] euMaxima = new double[0];
-    private static double[] ceuMaxima = new double[0];
+    private static double[] euBallMaximaBuffer = new double[0];
+    private static double[] ceuBallMaximaBuffer = new double[0];
 
     private MgValueCompute() {
     }
 
-    /** Grows {@code buf} to hold at least {@code need} doubles (keeps the old one if big enough). */
-    private static double[] ensureCapacity(double[] buf, int need) {
-        return buf.length >= need ? buf : new double[Math.max(need, 64)];
+    /** Grows {@code buffer} to hold at least {@code requiredCapacity} doubles. */
+    private static double[] ensureCapacity(double[] buffer, int requiredCapacity) {
+        return buffer.length >= requiredCapacity
+                ? buffer
+                : new double[Math.max(requiredCapacity, 64)];
     }
 
-    /** @param s CMNI support, @param m pattern multiplicity, @param u exact utility,
-     *  @param ivu / @param eu / @param ceu the three pruning bounds,
-     *  @param images image table (not stored in a Row). */
-    public record MgEval(int s, int m, double u, double ivu, double eu, double ceu,
-                         CMNITable images) {
-        public MgEval(int s, int m, double u, double ivu, double eu, double ceu) {
-            this(s, m, u, ivu, eu, ceu, null);
+    /**
+     * Evaluation of one pattern.
+     *
+     * @param support      CMNI support s(P)
+     * @param multiplicity pattern edge multiplicity m(P)
+     * @param utility      exact utility u(P)
+     * @param ivuBound     IVU pruning bound
+     * @param euBound      EU pruning bound
+     * @param ceuBound     CEU pruning bound
+     * @param imageTable   exact image sets, or {@code null} when they are not retained
+     */
+    public record MgEval(int support, int multiplicity, double utility,
+                         double ivuBound, double euBound, double ceuBound,
+                         CMNITable imageTable) {
+        public MgEval(int support, int multiplicity, double utility,
+                      double ivuBound, double euBound, double ceuBound) {
+            this(support, multiplicity, utility, ivuBound, euBound, ceuBound, null);
         }
 
-        public static MgEval empty(int m) {
-            return new MgEval(0, m, 0, 0, 0, 0, null);
+        /** Evaluation of a pattern with no MER-valid occurrence. */
+        public static MgEval unsupported(int multiplicity) {
+            return new MgEval(0, multiplicity, 0, 0, 0, 0, null);
         }
 
         /** Selected pruning bound (baseline {@code Evaluation#bound}). */
         public double bound(MgBoundType type) {
             return switch (type) {
-                case IVU -> ivu;
-                case EU -> eu;
-                case CEU -> ceu;
+                case IVU -> ivuBound;
+                case EU -> euBound;
+                case CEU -> ceuBound;
             };
         }
 
+        /** Same evaluation without the image table (the miner drops it for leaf patterns). */
         public MgEval withoutImages() {
-            return images == null ? this : new MgEval(s, m, u, ivu, eu, ceu, null);
+            return imageTable == null
+                    ? this
+                    : new MgEval(support, multiplicity, utility, ivuBound, euBound, ceuBound, null);
         }
     }
 
@@ -101,60 +117,69 @@ public final class MgValueCompute {
      */
     public static MgEval evaluate(MultiGraph g, MgDFSCode code, int mer,
                                   CMNITable parentImages, MgBoundType neededBound) {
-        int[] labels = code.labels();
-        List<MgEdge> edges = code.patternEdges();
-        int m = code.m();
+        int[] vertexLabels = code.labels();
+        List<MgEdge> patternEdges = code.patternEdges();
+        int multiplicity = code.multiplicity();
 
         MgProfile.begin();
-        CMNITable img = MgOccurrences.images(g, labels, edges, mer, parentImages);
+        CMNITable imageTable = MgOccurrences.images(g, vertexLabels, patternEdges, mer,
+                parentImages);
         MgProfile.end("eval/occurrences");
-        int s = img.cmni();
-        if (s == 0) {
+        int support = imageTable.cmni();
+        if (support == 0) {
             if (MgLog.isTrace()) {
                 MgLog.trace("eval %s: no support (m=%d, columns=%s)",
-                        code.key(), m, img.columnSizes());
+                        code.key(), multiplicity, imageTable.columnSizes());
             }
-            return new MgEval(0, m, 0, 0, 0, 0, img);
+            return new MgEval(0, multiplicity, 0, 0, 0, 0, imageTable);
         }
 
-        double sumExt = 0;
-        for (MgEdge e : edges) {
-            VecLabel le = e.le();
-            for (int i = 0, k = le.nComps(); i < k; i++) {
-                VecLabel.Comp c = le.comp(i);
-                sumExt += (double) c.mult() * g.extOf(c.type());
+        // u(P) = CMNI(P) * mean external utility of one unit of pattern multiplicity.
+        double totalExternalUtility = 0;
+        for (MgEdge edge : patternEdges) {
+            VecLabel edgeLabel = edge.edgeLabel();
+            for (int index = 0, componentCount = edgeLabel.componentCount();
+                    index < componentCount; index++) {
+                VecLabel.Comp component = edgeLabel.component(index);
+                totalExternalUtility +=
+                        (double) component.multiplicity() * g.externalUtilityOf(component.type());
             }
         }
-        double u = (double) s * (sumExt / m);
+        double utility = (double) support * (totalExternalUtility / multiplicity);
 
         boolean needIvu = neededBound == null || neededBound == MgBoundType.IVU;
         boolean needEu = neededBound == null || neededBound == MgBoundType.EU;
         boolean needCeu = neededBound == null || neededBound == MgBoundType.CEU;
 
-        double ivu = 0, eu = 0, ceu = 0;
-        int balls = 0;
+        double ivuBound = 0, euBound = 0, ceuBound = 0;
+        int nonEmptyBallCount = 0;
         if (needIvu || needEu || needCeu) {
-            int labelI0 = labels[0];
-            int nBalls = img.images(0).size();
-            double[] maxAll = needEu ? (euMaxima = ensureCapacity(euMaxima, nBalls)) : null;
-            double[] maxGe = needCeu ? (ceuMaxima = ensureCapacity(ceuMaxima, nBalls)) : null;
-            int nAll = 0, nGe = 0;
-            double sumGe = 0;
+            int firstVertexLabel = vertexLabels[0];
+            int ballCount = imageTable.images(0).size();
+            // One reusable buffer per bound: evaluate() is only ever called from the
+            // single mining thread.
+            double[] ballMaxima = needEu
+                    ? (euBallMaximaBuffer = ensureCapacity(euBallMaximaBuffer, ballCount)) : null;
+            double[] filteredMaxima = needCeu
+                    ? (ceuBallMaximaBuffer = ensureCapacity(ceuBallMaximaBuffer, ballCount)) : null;
+            int ballMaximaCount = 0, filteredMaximaCount = 0;
+            double filteredSum = 0;
             MgProfile.begin();
-            for (int r : img.images(0)) {
+            for (int ballCenter : imageTable.images(0)) {
                 // O2 lives inside EsvCache: this call reads the memo unless --no-esv-cache is set.
-                double bestAll = g.ballBestExt(r, mer);
-                if (bestAll == Double.NEGATIVE_INFINITY) continue;
-                balls++;
+                double bestExternalUtility = g.ballMaxExternalUtility(ballCenter, mer);
+                if (bestExternalUtility == Double.NEGATIVE_INFINITY) continue;
+                nonEmptyBallCount++;
                 // IVU is the plain sum of these same maxima: one add per ball, no alloc.
                 // EU reuses it verbatim whenever top-s degenerates to "sum of everything".
-                ivu += bestAll;
-                if (needEu) maxAll[nAll++] = bestAll;
+                ivuBound += bestExternalUtility;
+                if (needEu) ballMaxima[ballMaximaCount++] = bestExternalUtility;
                 if (needCeu) {
-                    double bestGe = g.ballBestExtAtLeast(r, mer, labelI0);
-                    if (bestGe != Double.NEGATIVE_INFINITY) {
-                        maxGe[nGe++] = bestGe;
-                        sumGe += bestGe;
+                    double bestExternalUtilityAtLeastLabel =
+                            g.ballMaxExternalUtilityAtLeast(ballCenter, mer, firstVertexLabel);
+                    if (bestExternalUtilityAtLeastLabel != Double.NEGATIVE_INFINITY) {
+                        filteredMaxima[filteredMaximaCount++] = bestExternalUtilityAtLeastLabel;
+                        filteredSum += bestExternalUtilityAtLeastLabel;
                     }
                 }
             }
@@ -164,26 +189,35 @@ public final class MgValueCompute {
             // element and EU(P) == IVU(P) exactly -- no sort needed. This mirrors the
             // reference implementation's own shortcut (ValueCompute.topKSum:
             // "if (k >= len)"), and it fires for ~87% of supported patterns at MER=3.
-            if (needEu) eu = nAll > s ? topSum(maxAll, nAll, s) : ivu;
-            if (needCeu) ceu = nGe > s ? topSum(maxGe, nGe, s) : sumGe;
+            if (needEu) {
+                euBound = ballMaximaCount > support
+                        ? sumOfTopK(ballMaxima, ballMaximaCount, support) : ivuBound;
+            }
+            if (needCeu) {
+                ceuBound = filteredMaximaCount > support
+                        ? sumOfTopK(filteredMaxima, filteredMaximaCount, support) : filteredSum;
+            }
         }
         if (MgLog.isTrace()) {
             MgLog.trace("eval %s: s=%d m=%d u=%.4f ivu=%.4f eu=%.4f ceu=%.4f columns=%s balls=%d",
-                    code.key(), s, m, u, ivu, eu, ceu, img.columnSizes(), balls);
+                    code.key(), support, multiplicity, utility, ivuBound, euBound, ceuBound,
+                    imageTable.columnSizes(), nonEmptyBallCount);
         }
-        return new MgEval(s, m, u, ivu, eu, ceu, img);
+        return new MgEval(support, multiplicity, utility, ivuBound, euBound, ceuBound, imageTable);
     }
 
     /**
-     * Sum of the {@code k} largest entries of {@code values[0..n)}; sorts that prefix in place.
-     * Same quantity as the reference {@code ValueCompute.topKSum}, except that it sorts the
-     * caller's reusable buffer instead of copying the array per call.
+     * Sum of the {@code topCount} largest entries of {@code values[0..count)}; sorts that
+     * prefix in place. Same quantity as the reference {@code ValueCompute.topKSum}, except
+     * that it sorts the caller's reusable buffer instead of copying the array per call.
      */
-    private static double topSum(double[] values, int n, int k) {
-        if (k <= 0 || n <= 0) return 0;
-        Arrays.sort(values, 0, n);
+    private static double sumOfTopK(double[] values, int count, int topCount) {
+        if (topCount <= 0 || count <= 0) return 0;
+        Arrays.sort(values, 0, count);
         double total = 0;
-        for (int i = n - 1, stop = Math.max(0, n - k); i >= stop; i--) total += values[i];
+        for (int index = count - 1, stop = Math.max(0, count - topCount); index >= stop; index--) {
+            total += values[index];
+        }
         return total;
     }
 }

@@ -9,30 +9,32 @@ public final class MgDFSCode {
 
     private final MgEdgeTuple[] edges;
     private final int nVertices;
-    private final int[] vlabels;
-    private final int[] parent;
+    private final int[] vertexLabels;
+    private final int[] parents;
     private final int[] rightmostPath; // rightmost vertex first
 
     private MgDFSCode(MgEdgeTuple[] edges) {
         this.edges = edges;
-        int nv = 0;
-        for (MgEdgeTuple e : edges) nv = Math.max(nv, Math.max(e.i(), e.j()) + 1);
-        this.nVertices = nv;
-        this.vlabels = new int[nv];
-        this.parent = new int[nv];
-        Arrays.fill(parent, -1);
-        for (MgEdgeTuple e : edges) {
-            vlabels[e.i()] = e.li();
-            vlabels[e.j()] = e.lj();
-            if (e.isForward()) parent[e.j()] = e.i();
+        int vertexCount = 0;
+        for (MgEdgeTuple edge : edges) {
+            vertexCount = Math.max(vertexCount, Math.max(edge.fromVertex(), edge.toVertex()) + 1);
+        }
+        this.nVertices = vertexCount;
+        this.vertexLabels = new int[vertexCount];
+        this.parents = new int[vertexCount];
+        Arrays.fill(parents, -1);
+        for (MgEdgeTuple edge : edges) {
+            vertexLabels[edge.fromVertex()] = edge.fromLabel();
+            vertexLabels[edge.toVertex()] = edge.toLabel();
+            if (edge.isForward()) parents[edge.toVertex()] = edge.fromVertex();
         }
         List<Integer> path = new ArrayList<>();
-        for (int v = nv - 1; v >= 0; v = parent[v]) {
-            path.add(v);
-            if (v == 0) break;
+        for (int vertex = vertexCount - 1; vertex >= 0; vertex = parents[vertex]) {
+            path.add(vertex);
+            if (vertex == 0) break;
         }
         this.rightmostPath = new int[path.size()];
-        for (int k = 0; k < path.size(); k++) rightmostPath[k] = path.get(k);
+        for (int index = 0; index < path.size(); index++) rightmostPath[index] = path.get(index);
     }
 
     public static MgDFSCode of(List<MgEdgeTuple> list) {
@@ -43,9 +45,9 @@ public final class MgDFSCode {
         return new MgDFSCode(new MgEdgeTuple[] {e});
     }
 
-    public MgDFSCode extend(MgEdgeTuple e) {
+    public MgDFSCode extend(MgEdgeTuple edge) {
         MgEdgeTuple[] longer = Arrays.copyOf(edges, edges.length + 1);
-        longer[edges.length] = e;
+        longer[edges.length] = edge;
         return new MgDFSCode(longer);
     }
 
@@ -53,8 +55,8 @@ public final class MgDFSCode {
         return edges.length;
     }
 
-    public MgEdgeTuple get(int k) {
-        return edges[k];
+    public MgEdgeTuple get(int index) {
+        return edges[index];
     }
 
     public List<MgEdgeTuple> edges() {
@@ -65,13 +67,13 @@ public final class MgDFSCode {
         return nVertices;
     }
 
-    public int vertexLabel(int v) {
-        return vlabels[v];
+    public int vertexLabel(int vertex) {
+        return vertexLabels[vertex];
     }
 
     /** DFS-tree parent via forward edges; -1 for the root. */
-    public int parentOf(int v) {
-        return parent[v];
+    public int parentOf(int vertex) {
+        return parents[vertex];
     }
 
     /** Rightmost path, rightmost vertex first, ending at vertex 0. */
@@ -83,29 +85,34 @@ public final class MgDFSCode {
         return nVertices - 1;
     }
 
-    public boolean containsEdge(int a, int b) {
-        for (MgEdgeTuple e : edges) {
-            if ((e.i() == a && e.j() == b) || (e.i() == b && e.j() == a)) return true;
+    public boolean containsEdge(int fromVertex, int toVertex) {
+        for (MgEdgeTuple edge : edges) {
+            boolean sameOrientation =
+                    edge.fromVertex() == fromVertex && edge.toVertex() == toVertex;
+            boolean reversed = edge.fromVertex() == toVertex && edge.toVertex() == fromVertex;
+            if (sameOrientation || reversed) return true;
         }
         return false;
     }
 
     /** Vertex labels 0..n-1 (defensive copy). */
     public int[] labels() {
-        return vlabels.clone();
+        return vertexLabels.clone();
     }
 
-    /** Total pattern edge multiplicity m(P) = sum of VecLabel.size() over edges. */
-    public int m() {
-        int m = 0;
-        for (MgEdgeTuple e : edges) m += e.le().size();
-        return m;
+    /** Total pattern edge multiplicity m(P) = sum of the per-edge multiplicities. */
+    public int multiplicity() {
+        int total = 0;
+        for (MgEdgeTuple edge : edges) total += edge.edgeLabel().multiplicity();
+        return total;
     }
 
-    /** Plain (a,b,le) edges, one per DFS-code edge. */
+    /** Plain (fromVertex,toVertex,edgeLabel) edges, one per DFS-code edge. */
     public List<MgEdge> patternEdges() {
         List<MgEdge> out = new ArrayList<>(edges.length);
-        for (MgEdgeTuple e : edges) out.add(new MgEdge(e.i(), e.j(), e.le()));
+        for (MgEdgeTuple edge : edges) {
+            out.add(new MgEdge(edge.fromVertex(), edge.toVertex(), edge.edgeLabel()));
+        }
         return out;
     }
 

@@ -9,34 +9,36 @@ import java.util.Set;
  */
 public final class CMNITable {
 
-    private final List<Set<Integer>> images;
+    private final List<Set<Integer>> columns; // one image set per pattern vertex
 
-    public CMNITable(List<Set<Integer>> images) {
-        this.images = images;
+    public CMNITable(List<Set<Integer>> columns) {
+        this.columns = columns;
     }
 
     public int nColumns() {
-        return images.size();
+        return columns.size();
     }
 
-    public Set<Integer> images(int v) {
-        return images.get(v);
+    /** Image set of {@code patternVertex} over all MER-valid occurrences. */
+    public Set<Integer> images(int patternVertex) {
+        return columns.get(patternVertex);
     }
 
+    /** CMNI(P): the size of the smallest column. */
     public int cmni() {
-        int min = Integer.MAX_VALUE;
-        for (Set<Integer> col : images) min = Math.min(min, col.size());
-        return min == Integer.MAX_VALUE ? 0 : min;
+        int smallestColumn = Integer.MAX_VALUE;
+        for (Set<Integer> column : columns) smallestColumn = Math.min(smallestColumn, column.size());
+        return smallestColumn == Integer.MAX_VALUE ? 0 : smallestColumn;
     }
 
     /** Compact per-column sizes, e.g. {@code [4,2,2]}, for verbose diagnostics. */
     public String columnSizes() {
-        StringBuilder sb = new StringBuilder(2 + images.size() * 4);
-        sb.append('[');
-        for (int v = 0; v < images.size(); v++) {
-            if (v > 0) sb.append(',');
-            sb.append(images.get(v).size());
+        StringBuilder text = new StringBuilder(2 + columns.size() * 4);
+        text.append('[');
+        for (int column = 0; column < columns.size(); column++) {
+            if (column > 0) text.append(',');
+            text.append(columns.get(column).size());
         }
-        return sb.append(']').toString();
+        return text.append(']').toString();
     }
 }

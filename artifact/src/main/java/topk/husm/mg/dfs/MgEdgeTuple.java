@@ -1,14 +1,20 @@
 package topk.husm.mg.dfs;
 
-/** DFS-code edge {@code (i,j,li,le,lj)}; forward iff {@code i<j}. */
-public record MgEdgeTuple(int i, int j, int li, VecLabel le, int lj) {
+/**
+ * One edge of a DFS code: {@code (fromVertex, toVertex, fromLabel, edgeLabel, toLabel)}.
+ * Forward iff {@code fromVertex < toVertex}. The printed form keeps the compact
+ * {@code (i,j,li,le,lj)} layout, because {@link MgDFSCode#key()} uses it as pattern identity.
+ */
+public record MgEdgeTuple(int fromVertex, int toVertex, int fromLabel, VecLabel edgeLabel,
+                          int toLabel) {
 
     public boolean isForward() {
-        return i < j;
+        return fromVertex < toVertex;
     }
 
     @Override
     public String toString() {
-        return "(" + i + "," + j + "," + li + "," + le + "," + lj + ")";
+        return "(" + fromVertex + "," + toVertex + "," + fromLabel + "," + edgeLabel + ","
+                + toLabel + ")";
     }
 }

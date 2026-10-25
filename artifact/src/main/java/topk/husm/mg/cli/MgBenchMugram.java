@@ -121,7 +121,7 @@ public final class MgBenchMugram {
                         i - warmup + 1, repeats, cpuMsAll[i - warmup], allocAll[i - warmup],
                         peakAll[i - warmup], memLoggerPeak, memLoggerSamples,
                         res.stats.evaluated, res.stats.expanded,
-                        res.stats.pruned, res.stats.thetaFinal);
+                        res.stats.pruned, res.stats.finalThreshold);
             }
         }
         bean.setThreadAllocatedMemoryEnabled(prevAlloc);
@@ -138,7 +138,7 @@ public final class MgBenchMugram {
                         + "\"warmup\":%d,\"repeats\":%d}",
                 k, enableTopK, minUtil, mer, wdist, labelMode, boundType, incrementalDomains,
                 last.stats.evaluated, last.stats.expanded, last.stats.pruned,
-                last.stats.thetaFinal, cpuMs, allocBytes, peakBytes, liveBaseline, peakLive,
+                last.stats.finalThreshold, cpuMs, allocBytes, peakBytes, liveBaseline, peakLive,
                 memLoggerPeak, memLoggerMs, memLoggerSamples, warmup, repeats);
         System.out.println(json);
         if (reportFile != null) {

@@ -40,8 +40,8 @@ public final class MgBenchOne {
         long seed = rc.seed();
         int warmup = opt.intValue("--warmup", 3);
         int repeats = opt.intValue("--repeats", 5);
-        int maxM = rc.maxM();
-        int maxV = rc.maxV();
+        int maxMultiplicity = rc.maxMultiplicity();
+        int maxVertices = rc.maxVertices();
         boolean prune = rc.prune();
         long liveSampleMs = opt.longValue("--live-sample-ms", 0); // 0 = off
         long memLoggerMs = memLoggerMs(opt);
@@ -59,11 +59,11 @@ public final class MgBenchOne {
                         + " incrementalDomains=%s prune=%s maxM=%d maxV=%d warmup=%d repeats=%d"
                         + " liveSampleMs=%d memLoggerMs=%d",
                 dataset, edgesFile, k, enableTopK, minUtil, mer, nlabels, labelMode, seed,
-                wdist, boundType, incrementalDomains, prune, maxM, maxV, warmup, repeats,
-                liveSampleMs, memLoggerMs);
+                wdist, boundType, incrementalDomains, prune, maxMultiplicity, maxVertices, warmup,
+                repeats, liveSampleMs, memLoggerMs);
         // no pattern-size cap by default
         MgHUSM.Config cfg = new MgHUSM.Config(k, mer, prune, false,
-                maxM, maxV, boundType, incrementalDomains, enableTopK, minUtil);
+                maxMultiplicity, maxVertices, boundType, incrementalDomains, enableTopK, minUtil);
 
         long liveBaseline = liveSampleMs > 0 ? LiveHeapSampler.liveNow() : 0;
         long peakLive = 0;
@@ -131,7 +131,7 @@ public final class MgBenchOne {
                         i - warmup + 1, repeats, cpuMsAll[i - warmup], wallMsAll[i - warmup],
                         allocAll[i - warmup], peakAll[i - warmup], memLoggerPeak,
                         memLoggerSamples, res.stats.evaluated, res.stats.expanded,
-                        res.stats.pruned, res.stats.thetaFinal);
+                        res.stats.pruned, res.stats.finalThreshold);
             }
         }
         bean.setThreadAllocatedMemoryEnabled(prevAlloc);
@@ -148,8 +148,9 @@ public final class MgBenchOne {
                         + "\"mem_logger_peak_bytes\":%d,\"mem_logger_interval_ms\":%d,\"mem_logger_samples\":%d,"
                         + "\"warmup\":%d,\"repeats\":%d}",
                 dataset, k, enableTopK, minUtil, mer, nlabels, wdist, labelMode, boundType,
-                incrementalDomains, maxM, maxV,
-                last.stats.evaluated, last.stats.expanded, last.stats.pruned, last.stats.thetaFinal,
+                incrementalDomains, maxMultiplicity, maxVertices,
+                last.stats.evaluated, last.stats.expanded, last.stats.pruned,
+                last.stats.finalThreshold,
                 cpuMs, wallMs, allocBytes, peakBytes, liveBaseline, peakLive,
                 memLoggerPeak, memLoggerMs, memLoggerSamples, warmup, repeats);
         System.out.println(json);

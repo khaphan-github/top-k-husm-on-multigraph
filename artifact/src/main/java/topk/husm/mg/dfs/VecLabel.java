@@ -11,110 +11,116 @@ import java.util.List;
 public final class VecLabel implements Comparable<VecLabel> {
 
     /** One (type, multiplicity) component, multiplicity &gt;= 1. */
-    public record Comp(int type, int mult) implements Comparable<Comp> {
+    public record Comp(int type, int multiplicity) implements Comparable<Comp> {
         public Comp {
-            if (mult < 1) throw new IllegalArgumentException("mult must be >= 1, got " + mult);
+            if (multiplicity < 1) {
+                throw new IllegalArgumentException("multiplicity must be >= 1, got " + multiplicity);
+            }
         }
 
         @Override
-        public int compareTo(Comp o) {
-            if (type != o.type) return Integer.compare(type, o.type);
-            return Integer.compare(mult, o.mult);
+        public int compareTo(Comp other) {
+            if (type != other.type) return Integer.compare(type, other.type);
+            return Integer.compare(multiplicity, other.multiplicity);
         }
     }
 
-    private final Comp[] comps; // sorted ascending by type, distinct types
+    private final Comp[] components; // sorted ascending by type, distinct types
 
-    private VecLabel(Comp[] comps) {
-        this.comps = comps;
+    private VecLabel(Comp[] components) {
+        this.components = components;
     }
 
     /** Single-type convenience. */
-    public static VecLabel of(int type, int mult) {
-        return new VecLabel(new Comp[] {new Comp(type, mult)});
+    public static VecLabel of(int type, int multiplicity) {
+        return new VecLabel(new Comp[] {new Comp(type, multiplicity)});
     }
 
     /** From a possibly unsorted list; types must be distinct. */
-    public static VecLabel of(List<Comp> list) {
-        Comp[] arr = list.toArray(new Comp[0]);
-        Arrays.sort(arr);
-        for (int i = 1; i < arr.length; i++) {
-            if (arr[i].type() == arr[i - 1].type()) {
-                throw new IllegalArgumentException("duplicate type " + arr[i].type() + " in " + list);
+    public static VecLabel of(List<Comp> components) {
+        Comp[] sorted = components.toArray(new Comp[0]);
+        Arrays.sort(sorted);
+        for (int index = 1; index < sorted.length; index++) {
+            if (sorted[index].type() == sorted[index - 1].type()) {
+                throw new IllegalArgumentException(
+                        "duplicate type " + sorted[index].type() + " in " + components);
             }
         }
-        return new VecLabel(arr);
+        return new VecLabel(sorted);
     }
 
-    public int nComps() {
-        return comps.length;
+    /** Number of distinct types in this label. */
+    public int componentCount() {
+        return components.length;
     }
 
-    public Comp comp(int i) {
-        return comps[i];
+    public Comp component(int index) {
+        return components[index];
     }
 
-    public List<Comp> comps() {
-        return List.of(comps);
+    public List<Comp> components() {
+        return List.of(components);
     }
 
-    /** Total multiplicity m(le). */
-    public int size() {
-        int s = 0;
-        for (Comp c : comps) s += c.mult();
-        return s;
+    /** Total multiplicity m(le): the sum of the per-type multiplicities. */
+    public int multiplicity() {
+        int total = 0;
+        for (Comp component : components) total += component.multiplicity();
+        return total;
     }
 
     @Override
-    public int compareTo(VecLabel o) {
-        int n = Math.min(comps.length, o.comps.length);
-        for (int i = 0; i < n; i++) {
-            int c = comps[i].compareTo(o.comps[i]);
-            if (c != 0) return c;
+    public int compareTo(VecLabel other) {
+        int shared = Math.min(components.length, other.components.length);
+        for (int index = 0; index < shared; index++) {
+            int comparison = components[index].compareTo(other.components[index]);
+            if (comparison != 0) return comparison;
         }
-        return Integer.compare(comps.length, o.comps.length);
+        return Integer.compare(components.length, other.components.length);
     }
 
     @Override
     public boolean equals(Object obj) {
-        return obj instanceof VecLabel v && Arrays.equals(comps, v.comps);
+        return obj instanceof VecLabel other && Arrays.equals(components, other.components);
     }
 
     @Override
     public int hashCode() {
-        return Arrays.hashCode(comps);
+        return Arrays.hashCode(components);
     }
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < comps.length; i++) {
-            if (i > 0) sb.append(',');
-            sb.append(comps[i].type()).append(':').append(comps[i].mult());
+        StringBuilder text = new StringBuilder("[");
+        for (int index = 0; index < components.length; index++) {
+            if (index > 0) text.append(',');
+            text.append(components[index].type()).append(':').append(components[index].multiplicity());
         }
-        return sb.append(']').toString();
+        return text.append(']').toString();
     }
 
     /** Merge two vectors, adding multiplicities on shared types. */
-    public static VecLabel merge(VecLabel a, VecLabel b) {
-        List<Comp> out = new ArrayList<>(a.comps.length + b.comps.length);
-        int i = 0, j = 0;
-        while (i < a.comps.length && j < b.comps.length) {
-            Comp x = a.comps[i], y = b.comps[j];
-            if (x.type() == y.type()) {
-                out.add(new Comp(x.type(), x.mult() + y.mult()));
-                i++;
-                j++;
-            } else if (x.type() < y.type()) {
-                out.add(x);
-                i++;
+    public static VecLabel merge(VecLabel left, VecLabel right) {
+        List<Comp> merged = new ArrayList<>(left.components.length + right.components.length);
+        int leftIndex = 0, rightIndex = 0;
+        while (leftIndex < left.components.length && rightIndex < right.components.length) {
+            Comp leftComponent = left.components[leftIndex];
+            Comp rightComponent = right.components[rightIndex];
+            if (leftComponent.type() == rightComponent.type()) {
+                merged.add(new Comp(leftComponent.type(),
+                        leftComponent.multiplicity() + rightComponent.multiplicity()));
+                leftIndex++;
+                rightIndex++;
+            } else if (leftComponent.type() < rightComponent.type()) {
+                merged.add(leftComponent);
+                leftIndex++;
             } else {
-                out.add(y);
-                j++;
+                merged.add(rightComponent);
+                rightIndex++;
             }
         }
-        while (i < a.comps.length) out.add(a.comps[i++]);
-        while (j < b.comps.length) out.add(b.comps[j++]);
-        return new VecLabel(out.toArray(new Comp[0]));
+        while (leftIndex < left.components.length) merged.add(left.components[leftIndex++]);
+        while (rightIndex < right.components.length) merged.add(right.components[rightIndex++]);
+        return new VecLabel(merged.toArray(new Comp[0]));
     }
 }

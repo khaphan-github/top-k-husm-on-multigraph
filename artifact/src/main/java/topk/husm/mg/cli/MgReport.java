@@ -129,81 +129,84 @@ final class MgReport {
      */
     static List<String> build(MgRunConfig cfg, int vertices, int pairs, double loadMs,
                               double elapsedS, MgHUSM.Result res, boolean includeAll) {
-        List<String> r = new ArrayList<>();
-        r.add("# Top-K HUSM multigraph run report");
-        r.add("generated: " + Instant.now());
-        r.add("dataset: " + cfg.dataset());
-        r.add("edges_file: " + cfg.edgesFile().toAbsolutePath().normalize());
-        r.add(String.format(Locale.ROOT,
+        List<String> lines = new ArrayList<>();
+        lines.add("# Top-K HUSM multigraph run report");
+        lines.add("generated: " + Instant.now());
+        lines.add("dataset: " + cfg.dataset());
+        lines.add("edges_file: " + cfg.edgesFile().toAbsolutePath().normalize());
+        lines.add(String.format(Locale.ROOT,
                 "config: K=%d enable_top_k=%s min_util=%.4f mer=%d nlabels=%d label_mode=%s"
                         + " seed=%d weight=%s ieu_bound=%s incremental_domains=%s prune=%s"
                         + " max_m=%d max_v=%d",
                 cfg.k(), cfg.enableTopK(), cfg.minUtil(), cfg.mer(), cfg.nlabels(),
                 cfg.labelMode(), cfg.seed(), cfg.weight(), cfg.boundType(),
-                cfg.incrementalDomains(), cfg.prune(), cfg.maxM(), cfg.maxV()));
-        r.add(String.format(Locale.ROOT, "graph: vertices=%d pairs=%d", vertices, pairs));
-        r.add(String.format(Locale.ROOT, "load_ms: %.1f", loadMs));
-        r.add("");
-        r.add("# search statistics");
-        r.add(String.format(Locale.ROOT,
+                cfg.incrementalDomains(), cfg.prune(), cfg.maxMultiplicity(), cfg.maxVertices()));
+        lines.add(String.format(Locale.ROOT, "graph: vertices=%d pairs=%d", vertices, pairs));
+        lines.add(String.format(Locale.ROOT, "load_ms: %.1f", loadMs));
+        lines.add("");
+        lines.add("# search statistics");
+        lines.add(String.format(Locale.ROOT,
                 "evaluated=%d expanded=%d pruned=%d candidates=%d rejected_non_min=%d"
                         + " rejected_cap=%d zero_support=%d roots=%d max_depth=%d"
                         + " theta=%.6f elapsed_s=%.3f",
                 res.stats.evaluated, res.stats.expanded, res.stats.pruned,
                 res.stats.candidates, res.stats.rejectedNonMin, res.stats.rejectedCap,
                 res.stats.zeroSupport, res.stats.roots, res.stats.maxDepth,
-                res.stats.thetaFinal, elapsedS));
-        r.add(String.format(Locale.ROOT, "topk_set_size=%d", MgHUSM.topkSet(res).size()));
+                res.stats.finalThreshold, elapsedS));
+        lines.add(String.format(Locale.ROOT, "topk_set_size=%d", MgHUSM.topkSet(res).size()));
         if (MgProfile.isEnabled()) {
-            r.add("");
-            r.add("# per-step profile (--profile); alloc_bytes = allocation volume, not live heap");
-            r.add("# phase\tcalls\twall_ms\tcpu_ms\talloc_bytes");
-            for (MgProfile.Phase p : MgProfile.phases()) {
-                r.add(String.format(Locale.ROOT, "%s\t%d\t%.2f\t%.2f\t%d",
-                        p.phase(), p.calls(), p.wallMs(), p.cpuMs(), p.allocBytes()));
+            lines.add("");
+            lines.add("# per-step profile (--profile); alloc_bytes = allocation volume, not live heap");
+            lines.add("# phase\tcalls\twall_ms\tcpu_ms\talloc_bytes");
+            for (MgProfile.Phase phase : MgProfile.phases()) {
+                lines.add(String.format(Locale.ROOT, "%s\t%d\t%.2f\t%.2f\t%d",
+                        phase.phase(), phase.calls(), phase.wallMs(), phase.cpuMs(),
+                        phase.allocBytes()));
             }
         }
-        r.add("");
-        r.add(cfg.enableTopK()
+        lines.add("");
+        lines.add(cfg.enableTopK()
                 ? "# top-" + cfg.k() + " patterns (u descending; code = DFS code)"
                 : "# all patterns with s > 0 (top-k disabled; u descending; code = DFS code)");
-        r.add("# u\t\ts\tm\tbound\tcode");
-        int shown = 0;
+        lines.add("# u\t\ts\tm\tbound\tcode");
+        int shownCount = 0;
         for (MgHUSM.Row row : res.rows) {
-            if (cfg.enableTopK() && shown >= cfg.k()) break;
-            if (row.s() <= 0 || row.u() + 1e-9 < cfg.minUtil()) continue;
-            r.add(rowLine(row));
-            shown++;
+            if (cfg.enableTopK() && shownCount >= cfg.k()) break;
+            if (row.support() <= 0 || row.utility() + 1e-9 < cfg.minUtil()) continue;
+            lines.add(rowLine(row));
+            shownCount++;
         }
-        if (shown == 0) r.add("# (no pattern with support)");
+        if (shownCount == 0) lines.add("# (no pattern with support)");
         if (includeAll) {
-            r.add("");
-            r.add("# all evaluated patterns with s > 0 and u >= min_util (u descending)");
-            r.add("# u\t\ts\tm\tbound\tcode");
-            int total = 0;
+            lines.add("");
+            lines.add("# all evaluated patterns with s > 0 and u >= min_util (u descending)");
+            lines.add("# u\t\ts\tm\tbound\tcode");
+            int totalPatterns = 0;
             for (MgHUSM.Row row : res.rows) {
-                if (row.s() <= 0 || row.u() + 1e-9 < cfg.minUtil()) continue;
-                r.add(rowLine(row));
-                total++;
+                if (row.support() <= 0 || row.utility() + 1e-9 < cfg.minUtil()) continue;
+                lines.add(rowLine(row));
+                totalPatterns++;
             }
-            r.add("# total=" + total);
+            lines.add("# total=" + totalPatterns);
         }
-        return r;
+        return lines;
     }
 
     private static String rowLine(MgHUSM.Row row) {
         return String.format(Locale.ROOT, "%.2f\t%d\t%d\t%.2f\t%s",
-                row.u(), row.s(), row.m(), row.bound(), row.code());
+                row.utility(), row.support(), row.multiplicity(), row.bound(), row.dfsCode());
     }
 
     /** Number of distinct vertex pairs with at least one edge. */
-    static int countPairs(MultiGraph g) {
-        int n = g.n();
-        int count = 0;
-        for (int x = 0; x < n; x++) {
-            for (int y : g.neighbors(x)) if (x < y) count++;
+    static int countPairs(MultiGraph graph) {
+        int vertexCount = graph.vertexCount();
+        int pairCount = 0;
+        for (int vertex = 0; vertex < vertexCount; vertex++) {
+            for (int neighbor : graph.neighbors(vertex)) {
+                if (vertex < neighbor) pairCount++;
+            }
         }
-        return count;
+        return pairCount;
     }
 
     private static String safe(String name) {

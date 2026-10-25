@@ -20,94 +20,109 @@ public final class MgOccurrences {
     private MgOccurrences() {
     }
 
-    private record Nb(int w, VecLabel le) {
+    /** One neighbour of a pattern vertex: the other endpoint plus the edge label to satisfy. */
+    private record Neighbor(int vertex, VecLabel edgeLabel) {
     }
 
-    public static CMNITable images(MultiGraph g, int[] labels, List<MgEdge> edges, int mer) {
-        return images(g, labels, edges, mer, null);
+    public static CMNITable images(MultiGraph graph, int[] vertexLabels, List<MgEdge> patternEdges,
+                                   int mer) {
+        return images(graph, vertexLabels, patternEdges, mer, null);
     }
 
     /**
      * Uses the parent image table as initial domains; the appended edge is the only new
      * constraint, so only its endpoints are re-filtered.
      */
-    public static CMNITable images(MultiGraph g, int[] labels, List<MgEdge> edges, int mer,
-                                   CMNITable parentImages) {
+    public static CMNITable images(MultiGraph graph, int[] vertexLabels, List<MgEdge> patternEdges,
+                                   int mer, CMNITable parentImages) {
         MgProfile.begin();
-        int n = labels.length;
+        int vertexCount = vertexLabels.length;
         @SuppressWarnings("unchecked")
-        List<Nb>[] nbr = new List[n];
-        for (int v = 0; v < n; v++) nbr[v] = new ArrayList<>();
-        for (MgEdge e : edges) {
-            nbr[e.a()].add(new Nb(e.b(), e.le()));
-            nbr[e.b()].add(new Nb(e.a(), e.le()));
+        List<Neighbor>[] neighbors = new List[vertexCount];
+        for (int vertex = 0; vertex < vertexCount; vertex++) neighbors[vertex] = new ArrayList<>();
+        for (MgEdge edge : patternEdges) {
+            neighbors[edge.fromVertex()].add(new Neighbor(edge.toVertex(), edge.edgeLabel()));
+            neighbors[edge.toVertex()].add(new Neighbor(edge.fromVertex(), edge.edgeLabel()));
         }
 
         // For vertices incident to the appended edge, filter parent images by that edge only.
         // Other vertices keep their parent domains.
-        MgEdge added = (parentImages != null && !edges.isEmpty())
-                ? edges.get(edges.size() - 1) : null;
+        MgEdge appendedEdge = (parentImages != null && !patternEdges.isEmpty())
+                ? patternEdges.get(patternEdges.size() - 1) : null;
         MgProfile.begin();
-        List<Set<Integer>> dom = new ArrayList<>(n);
-        for (int v = 0; v < n; v++) {
-            Set<Integer> d = new HashSet<>();
-            if (parentImages != null && v < parentImages.nColumns()) {
-                if (added != null && (v == added.a() || v == added.b())) {
-                    int other = v == added.a() ? added.b() : added.a();
-                    int otherLabel = labels[other];
-                    for (int x : parentImages.images(v)) {
-                        if (g.hasNeighborMatching(x, otherLabel, added.le())) d.add(g.boxedVertex(x));
+        List<Set<Integer>> domains = new ArrayList<>(vertexCount);
+        for (int vertex = 0; vertex < vertexCount; vertex++) {
+            Set<Integer> domain = new HashSet<>();
+            boolean seededFromParent = parentImages != null && vertex < parentImages.nColumns();
+            boolean touchedByAppendedEdge = appendedEdge != null
+                    && (vertex == appendedEdge.fromVertex() || vertex == appendedEdge.toVertex());
+            if (seededFromParent && touchedByAppendedEdge) {
+                int otherVertex = vertex == appendedEdge.fromVertex()
+                        ? appendedEdge.toVertex() : appendedEdge.fromVertex();
+                int otherLabel = vertexLabels[otherVertex];
+                for (int graphVertex : parentImages.images(vertex)) {
+                    if (graph.hasNeighborMatching(graphVertex, otherLabel,
+                            appendedEdge.edgeLabel())) {
+                        domain.add(graph.boxedVertex(graphVertex));
                     }
-                } else {
-                    d.addAll(parentImages.images(v));
                 }
+            } else if (seededFromParent) {
+                domain.addAll(parentImages.images(vertex));
             } else {
                 outer:
-                for (int x : g.byLabel(labels[v])) {
-                    for (Nb nb : nbr[v]) {
-                        if (!g.hasNeighborMatching(x, labels[nb.w()], nb.le())) continue outer;
+                for (int graphVertex : graph.verticesWithLabel(vertexLabels[vertex])) {
+                    for (Neighbor neighbor : neighbors[vertex]) {
+                        if (!graph.hasNeighborMatching(graphVertex,
+                                vertexLabels[neighbor.vertex()], neighbor.edgeLabel())) {
+                            continue outer;
+                        }
                     }
-                    d.add(g.boxedVertex(x));
+                    domain.add(graph.boxedVertex(graphVertex));
                 }
             }
-            dom.add(d);
+            domains.add(domain);
         }
         MgProfile.end("occ/domains");
 
-        int[] par = new int[n]; // par[0] unused
-        List<List<Nb>> earlier = new ArrayList<>(n);
-        for (int v = 0; v < n; v++) {
-            List<Nb> ea = new ArrayList<>();
-            int minW = Integer.MAX_VALUE;
-            for (Nb nb : nbr[v]) {
-                if (nb.w() < v) {
-                    ea.add(nb);
-                    minW = Math.min(minW, nb.w());
+        // dfsParent[v] = the earliest pattern vertex adjacent to v; the search maps it first.
+        int[] dfsParent = new int[vertexCount]; // dfsParent[0] unused
+        List<List<Neighbor>> earlierNeighbors = new ArrayList<>(vertexCount);
+        for (int vertex = 0; vertex < vertexCount; vertex++) {
+            List<Neighbor> earlier = new ArrayList<>();
+            int smallestEarlierVertex = Integer.MAX_VALUE;
+            for (Neighbor neighbor : neighbors[vertex]) {
+                if (neighbor.vertex() < vertex) {
+                    earlier.add(neighbor);
+                    smallestEarlierVertex = Math.min(smallestEarlierVertex, neighbor.vertex());
                 }
             }
-            earlier.add(ea);
-            if (v > 0) {
-                if (minW == Integer.MAX_VALUE) {
-                    throw new IllegalStateException("pattern vertex " + v + " has no earlier neighbour"
+            earlierNeighbors.add(earlier);
+            if (vertex > 0) {
+                if (smallestEarlierVertex == Integer.MAX_VALUE) {
+                    throw new IllegalStateException("pattern vertex " + vertex
+                            + " has no earlier neighbour"
                             + " -- edges are not in DFS-code order");
                 }
-                par[v] = minW;
+                dfsParent[vertex] = smallestEarlierVertex;
             }
         }
 
-        List<Set<Integer>> conf = new ArrayList<>(n);
-        for (int v = 0; v < n; v++) conf.add(new HashSet<>());
+        List<Set<Integer>> confirmedImages = new ArrayList<>(vertexCount);
+        for (int vertex = 0; vertex < vertexCount; vertex++) confirmedImages.add(new HashSet<>());
 
-        Solver solver = new Solver(g, mer, dom, par, earlier, n);
+        OccurrenceSearch search = new OccurrenceSearch(graph, mer, domains, dfsParent,
+                earlierNeighbors, vertexCount);
         MgProfile.begin();
-        for (int v = 0; v < n; v++) {
-            for (int x : new ArrayList<>(dom.get(v))) {
-                if (conf.get(v).contains(x)) continue;
-                int[] sol = solver.solve(v, x);
-                if (sol == null) {
-                    dom.get(v).remove(g.boxedVertex(x));
+        for (int patternVertex = 0; patternVertex < vertexCount; patternVertex++) {
+            for (int graphVertex : new ArrayList<>(domains.get(patternVertex))) {
+                if (confirmedImages.get(patternVertex).contains(graphVertex)) continue;
+                int[] occurrence = search.solve(patternVertex, graphVertex);
+                if (occurrence == null) {
+                    domains.get(patternVertex).remove(graph.boxedVertex(graphVertex));
                 } else {
-                    for (int u = 0; u < n; u++) conf.get(u).add(g.boxedVertex(sol[u]));
+                    for (int vertex = 0; vertex < vertexCount; vertex++) {
+                        confirmedImages.get(vertex).add(graph.boxedVertex(occurrence[vertex]));
+                    }
                 }
             }
         }
@@ -115,103 +130,117 @@ public final class MgOccurrences {
         if (MgLog.isTrace()) {
             MgLog.trace("images: vertices=%d edges=%d mer=%d incremental=%s domains=%s"
                             + " -> images=%s steps=%d",
-                    n, edges.size(), mer, parentImages != null, sizes(dom), sizes(conf),
-                    solver.steps);
+                    vertexCount, patternEdges.size(), mer, parentImages != null,
+                    formatColumnSizes(domains), formatColumnSizes(confirmedImages),
+                    search.stepCount);
         }
         MgProfile.end("occ");
-        return new CMNITable(conf);
+        return new CMNITable(confirmedImages);
     }
 
-    private static String sizes(List<Set<Integer>> columns) {
-        StringBuilder sb = new StringBuilder(2 + columns.size() * 4);
-        sb.append('[');
-        for (int v = 0; v < columns.size(); v++) {
-            if (v > 0) sb.append(',');
-            sb.append(columns.get(v).size());
+    private static String formatColumnSizes(List<Set<Integer>> columns) {
+        StringBuilder text = new StringBuilder(2 + columns.size() * 4);
+        text.append('[');
+        for (int column = 0; column < columns.size(); column++) {
+            if (column > 0) text.append(',');
+            text.append(columns.get(column).size());
         }
-        return sb.append(']').toString();
+        return text.append(']').toString();
     }
 
-    /** Backtracking search for one MER-valid occurrence with phi[fv]=fx. */
-    private static final class Solver {
-        private final MultiGraph g;
+    /**
+     * Backtracking search for one MER-valid occurrence in which pattern vertex
+     * {@code forcedPatternVertex} is mapped to graph vertex {@code forcedGraphVertex}.
+     */
+    private static final class OccurrenceSearch {
+        private final MultiGraph graph;
         private final int mer;
-        private final List<Set<Integer>> dom;
-        private final int[] par;
-        private final List<List<Nb>> earlier;
-        private final int n;
+        private final List<Set<Integer>> domains;
+        private final int[] dfsParent;
+        private final List<List<Neighbor>> earlierNeighbors;
+        private final int vertexCount;
         private final boolean countSteps;
-        private final int[] phi;
-        private long steps;
-        private int fv;
-        private int fx;
+        /** mapping[patternVertex] = graph vertex, or -1 while unmapped. */
+        private final int[] mapping;
+        private long stepCount;
+        private int forcedPatternVertex;
+        private int forcedGraphVertex;
 
-        Solver(MultiGraph g, int mer, List<Set<Integer>> dom, int[] par, List<List<Nb>> earlier, int n) {
-            this.g = g;
+        OccurrenceSearch(MultiGraph graph, int mer, List<Set<Integer>> domains, int[] dfsParent,
+                         List<List<Neighbor>> earlierNeighbors, int vertexCount) {
+            this.graph = graph;
             this.mer = mer;
-            this.dom = dom;
-            this.par = par;
-            this.earlier = earlier;
-            this.n = n;
+            this.domains = domains;
+            this.dfsParent = dfsParent;
+            this.earlierNeighbors = earlierNeighbors;
+            this.vertexCount = vertexCount;
             this.countSteps = MgLog.isTrace();
-            this.phi = new int[n];
+            this.mapping = new int[vertexCount];
         }
 
-        int[] solve(int fv, int fx) {
-            this.fv = fv;
-            this.fx = fx;
-            java.util.Arrays.fill(phi, -1);
-            return rec(0) ? phi.clone() : null;
+        /** @return a complete mapping, or {@code null} when no occurrence exists */
+        int[] solve(int forcedPatternVertex, int forcedGraphVertex) {
+            this.forcedPatternVertex = forcedPatternVertex;
+            this.forcedGraphVertex = forcedGraphVertex;
+            java.util.Arrays.fill(mapping, -1);
+            return search(0) ? mapping.clone() : null;
         }
 
-        private boolean rec(int v) {
-            if (countSteps) steps++;
-            if (v == n) return true;
-            if (v == 0) return recFirst();
-            // The ball of phi[0] is the active membership view (set once at depth 1).
-            if (v == 1) g.ballView(phi[0], mer);
-            int[] ys = g.neighborsOf(phi[par[v]]);
-            for (int i = 0; i < ys.length; i++) {
-                int y = ys[i];
-                if (v == fv && y != fx) continue;
-                if (containsPhi(y, v)) continue;
-                if (!g.inBallView(y)) continue;
-                if (!dom.get(v).contains(g.boxedVertex(y))) continue;
-                if (!earlierOk(v, y)) continue;
-                phi[v] = y;
-                if (rec(v + 1)) return true;
-                phi[v] = -1;
+        private boolean search(int patternVertex) {
+            if (countSteps) stepCount++;
+            if (patternVertex == vertexCount) return true;
+            if (patternVertex == 0) return searchFirstVertex();
+            // The ball of mapping[0] is the active membership view (set once at depth 1).
+            if (patternVertex == 1) graph.activateBallView(mapping[0], mer);
+            int[] candidateVertices = graph.neighborIds(mapping[dfsParent[patternVertex]]);
+            for (int graphVertex : candidateVertices) {
+                if (patternVertex == forcedPatternVertex && graphVertex != forcedGraphVertex) {
+                    continue;
+                }
+                if (isVertexAlreadyMapped(graphVertex, patternVertex)) continue;
+                if (!graph.isInActiveBall(graphVertex)) continue;
+                if (!domains.get(patternVertex).contains(graph.boxedVertex(graphVertex))) continue;
+                if (!allEarlierNeighborsCompatible(patternVertex, graphVertex)) continue;
+                mapping[patternVertex] = graphVertex;
+                if (search(patternVertex + 1)) return true;
+                mapping[patternVertex] = -1;
             }
             return false;
         }
 
-        private boolean recFirst() {
-            if (fv == 0) {
-                if (!dom.get(0).contains(fx)) return false;
-                phi[0] = fx;
-                if (rec(1)) return true;
-                phi[0] = -1;
+        private boolean searchFirstVertex() {
+            if (forcedPatternVertex == 0) {
+                if (!domains.get(0).contains(forcedGraphVertex)) return false;
+                mapping[0] = forcedGraphVertex;
+                if (search(1)) return true;
+                mapping[0] = -1;
                 return false;
             }
-            // phi[0] may map to any in-ball vertex, in cached ball order.
-            for (int r : g.ballView(fx, mer)) {
-                if (!dom.get(0).contains(r)) continue;
-                phi[0] = r;
-                if (rec(1)) return true;
-                phi[0] = -1;
+            // mapping[0] may map to any in-ball vertex, in cached ball order.
+            for (int graphVertex : graph.activateBallView(forcedGraphVertex, mer)) {
+                if (!domains.get(0).contains(graphVertex)) continue;
+                mapping[0] = graphVertex;
+                if (search(1)) return true;
+                mapping[0] = -1;
             }
             return false;
         }
 
-        /** True when {@code y} is already used by one of phi[0..upto-1]. */
-        private boolean containsPhi(int y, int upto) {
-            for (int i = 0; i < upto; i++) if (phi[i] == y) return true;
+        /** True when {@code graphVertex} is already used by one of mapping[0..upto-1]. */
+        private boolean isVertexAlreadyMapped(int graphVertex, int upto) {
+            for (int index = 0; index < upto; index++) {
+                if (mapping[index] == graphVertex) return true;
+            }
             return false;
         }
 
-        private boolean earlierOk(int v, int y) {
-            for (Nb nb : earlier.get(v)) {
-                if (!g.vecOk(phi[nb.w()], y, nb.le())) return false;
+        /** True when every earlier neighbour of {@code patternVertex} stays compatible. */
+        private boolean allEarlierNeighborsCompatible(int patternVertex, int graphVertex) {
+            for (Neighbor neighbor : earlierNeighbors.get(patternVertex)) {
+                if (!graph.edgeLabelSatisfied(mapping[neighbor.vertex()], graphVertex,
+                        neighbor.edgeLabel())) {
+                    return false;
+                }
             }
             return true;
         }

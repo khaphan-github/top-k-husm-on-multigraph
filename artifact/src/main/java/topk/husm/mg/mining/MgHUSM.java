@@ -28,32 +28,39 @@ public final class MgHUSM {
     /** Emit a DEBUG progress line every this many evaluated patterns (verbose runs only). */
     private static final long PROGRESS_EVERY = 100_000L;
 
-    /** @param k Top-K size (unused when {@code enableTopK} is false); @param keepRows log all
-     *  evaluated patterns (tests); @param maxM max total multiplicity; @param maxV max pattern
+    /** @param k Top-K size (unused when {@code enableTopK} is false); @param mer maximum edge
+     *  radius of an occurrence; @param keepRows log all evaluated patterns (tests);
+     *  @param maxMultiplicity max total edge multiplicity m(P); @param maxVertices max pattern
      *  vertices; @param boundType pruning bound; @param incrementalDomains reuse parent image
-     *  tables; @param enableTopK keep only the K best patterns and prune against theta; when
-     *  false, every pattern with {@code u >= minUtil} is kept; @param minUtil minimum utility
-     *  (0 = none); with Top-K enabled it is an extra floor below which patterns are dropped. */
-    public record Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
+     *  tables; @param enableTopK keep only the K best patterns and prune against the dynamic
+     *  threshold; when false, every pattern with {@code u >= minUtil} is kept; @param minUtil
+     *  minimum utility (0 = none); with Top-K enabled it is an extra floor. */
+    public record Config(int k, int mer, boolean prune, boolean keepRows,
+                         int maxMultiplicity, int maxVertices,
                          MgBoundType boundType, boolean incrementalDomains, boolean enableTopK,
                          double minUtil) {
-        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
+        public Config(int k, int mer, boolean prune, boolean keepRows,
+                      int maxMultiplicity, int maxVertices,
                       MgBoundType boundType, boolean incrementalDomains, boolean enableTopK) {
-            this(k, mer, prune, keepRows, maxM, maxV, boundType, incrementalDomains, enableTopK, 0);
+            this(k, mer, prune, keepRows, maxMultiplicity, maxVertices, boundType,
+                    incrementalDomains, enableTopK, 0);
         }
 
-        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
+        public Config(int k, int mer, boolean prune, boolean keepRows,
+                      int maxMultiplicity, int maxVertices,
                       MgBoundType boundType, boolean incrementalDomains) {
-            this(k, mer, prune, keepRows, maxM, maxV, boundType, incrementalDomains, true, 0);
+            this(k, mer, prune, keepRows, maxMultiplicity, maxVertices, boundType,
+                    incrementalDomains, true, 0);
         }
 
-        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV,
-                      MgBoundType boundType) {
-            this(k, mer, prune, keepRows, maxM, maxV, boundType, true, true, 0);
+        public Config(int k, int mer, boolean prune, boolean keepRows,
+                      int maxMultiplicity, int maxVertices, MgBoundType boundType) {
+            this(k, mer, prune, keepRows, maxMultiplicity, maxVertices, boundType, true, true, 0);
         }
 
-        public Config(int k, int mer, boolean prune, boolean keepRows, int maxM, int maxV) {
-            this(k, mer, prune, keepRows, maxM, maxV, MgBoundType.IVU, true);
+        public Config(int k, int mer, boolean prune, boolean keepRows,
+                      int maxMultiplicity, int maxVertices) {
+            this(k, mer, prune, keepRows, maxMultiplicity, maxVertices, MgBoundType.IVU, true);
         }
 
         public Config(int k, int mer, boolean prune, boolean keepRows) {
@@ -65,11 +72,13 @@ public final class MgHUSM {
         }
     }
 
-    /** {@code bound} is the selected IEU(P). */
-    public record Row(double u, MgDFSCode code, int m, int s, double bound) {
+    /** One evaluated pattern. {@code bound} is the selected IEU(P). */
+    public record Row(double utility, MgDFSCode dfsCode, int multiplicity, int support,
+                      double bound) {
     }
 
-    public record TopEntry(double u, MgDFSCode code) {
+    /** One retained Top-K entry. */
+    public record TopEntry(double utility, MgDFSCode dfsCode) {
     }
 
     /** Search counters; the first four are the original benchmark numbers, the rest are
@@ -78,7 +87,7 @@ public final class MgHUSM {
         public long evaluated;
         public long expanded;
         public long pruned;
-        public double thetaFinal;
+        public double finalThreshold;
         /** Candidate extensions generated before min-code / cap filtering. */
         public long candidates;
         /** Candidates dropped because they are not a minimum DFS code. */
@@ -101,148 +110,166 @@ public final class MgHUSM {
         public final Stats stats = new Stats();
     }
 
-    private record Cand(MgDFSCode code, MgEval ev) {
+    /** A candidate child: its DFS code plus the evaluation that decides whether to descend. */
+    private record Candidate(MgDFSCode dfsCode, MgEval evaluation) {
     }
 
-    private final MultiGraph g;
-    private final Config cfg;
-    private final MgAlphabet alpha;
-    private final PriorityQueue<Double> heap = new PriorityQueue<>(); // min-heap of the K largest u
+    private final MultiGraph graph;
+    private final Config config;
+    private final MgAlphabet alphabet;
+    /** Min-heap of the K largest utilities seen so far. */
+    private final PriorityQueue<Double> topKHeap = new PriorityQueue<>();
     private final Result result = new Result();
-    private long nextProgress = PROGRESS_EVERY;
+    private long nextProgressAt = PROGRESS_EVERY;
 
-    private MgHUSM(MultiGraph g, Config cfg) {
-        this.g = g;
-        this.cfg = cfg;
-        this.alpha = new MgAlphabet(g.seedTypes());
+    private MgHUSM(MultiGraph graph, Config config) {
+        this.graph = graph;
+        this.config = config;
+        this.alphabet = new MgAlphabet(graph.seedTypes());
     }
 
-    public static Result mine(MultiGraph g, Config cfg) {
-        return new MgHUSM(g, cfg).run();
+    public static Result mine(MultiGraph graph, Config config) {
+        return new MgHUSM(graph, config).run();
     }
 
-    /** Theta is the max of the Top-K threshold and {@code minUtil}; 0 when neither is set. */
-    private double theta() {
-        double floor = cfg.minUtil();
-        return cfg.enableTopK() && heap.size() >= cfg.k()
-                ? Math.max(floor, heap.peek())
-                : floor;
+    /** Current threshold: max of the Top-K threshold and {@code minUtil}; 0 when neither is set. */
+    private double currentThreshold() {
+        double minUtilFloor = config.minUtil();
+        return config.enableTopK() && topKHeap.size() >= config.k()
+                ? Math.max(minUtilFloor, topKHeap.peek())
+                : minUtilFloor;
     }
 
     /** True when a pattern utility reaches the configured minimum. */
-    private boolean meetsMinUtil(double u) {
-        return u + BOUND_EPS >= cfg.minUtil();
+    private boolean meetsMinUtil(double utility) {
+        return utility + BOUND_EPS >= config.minUtil();
     }
 
-    private void record(MgDFSCode code, MgEval ev) {
-        double uval = ev.u();
-        if (cfg.keepRows()) {
-            result.rows.add(new Row(uval, code, ev.m(), ev.s(), ev.bound(cfg.boundType())));
+    /** Stores one evaluated pattern in the rows and/or the Top-K structures. */
+    private void recordPattern(MgDFSCode dfsCode, MgEval evaluation) {
+        double utility = evaluation.utility();
+        if (config.keepRows()) {
+            result.rows.add(new Row(utility, dfsCode, evaluation.multiplicity(),
+                    evaluation.support(), evaluation.bound(config.boundType())));
         }
-        if (ev.s() > 0 && meetsMinUtil(uval)) {
-            if (cfg.enableTopK()) {
-                heap.add(uval);
-                if (heap.size() > cfg.k()) heap.poll();
+        if (evaluation.support() > 0 && meetsMinUtil(utility)) {
+            if (config.enableTopK()) {
+                topKHeap.add(utility);
+                if (topKHeap.size() > config.k()) topKHeap.poll();
             }
-            if (!cfg.keepRows() && uval > 0 && uval >= theta()) {
-                result.top.add(new TopEntry(uval, code));
-                if (cfg.enableTopK() && result.top.size() > 4 * cfg.k() + 64) {
-                    // drop entries below theta
-                    double th = theta();
-                    result.top.removeIf(t -> t.u() < th);
+            if (!config.keepRows() && utility > 0 && utility >= currentThreshold()) {
+                result.top.add(new TopEntry(utility, dfsCode));
+                if (config.enableTopK() && result.top.size() > 4 * config.k() + 64) {
+                    // drop entries the threshold has since overtaken
+                    double threshold = currentThreshold();
+                    result.top.removeIf(entry -> entry.utility() < threshold);
                 }
             }
         }
     }
 
-    private void expand(MgDFSCode code, MgEval ev, CMNITable images) {
+    private void expand(MgDFSCode dfsCode, MgEval evaluation, CMNITable inheritedImages) {
         MgProfile.begin();
         result.stats.expanded++;
-        int depth = code.size();
+        int depth = dfsCode.size();
         if (depth > result.stats.maxDepth) result.stats.maxDepth = depth;
-        double thetaIn = theta();
+        double thresholdAtEntry = currentThreshold();
         if (MgLog.isTrace()) {
             MgLog.trace("expand depth=%d code=%s m=%d s=%d u=%.4f [%s=%.4f] theta=%.4f",
-                    depth, code.key(), ev.m(), ev.s(), ev.u(), cfg.boundType(),
-                    ev.bound(cfg.boundType()), thetaIn);
+                    depth, dfsCode.key(), evaluation.multiplicity(), evaluation.support(),
+                    evaluation.utility(), config.boundType(),
+                    evaluation.bound(config.boundType()), thresholdAtEntry);
         }
-        if (ev.m() >= cfg.maxM()) {
-            if (MgLog.isTrace()) MgLog.trace("  stop: m=%d reached maxM=%d", ev.m(), cfg.maxM());
+        if (evaluation.multiplicity() >= config.maxMultiplicity()) {
+            if (MgLog.isTrace()) {
+                MgLog.trace("  stop: m=%d reached maxM=%d",
+                        evaluation.multiplicity(), config.maxMultiplicity());
+            }
             MgProfile.end("expand");
             return;
         }
-        List<Cand> kids = new ArrayList<>();
-        int generated = 0, zeroSupport = 0, nonMin = 0;
+        List<Candidate> children = new ArrayList<>();
+        int generatedCount = 0, zeroSupportCount = 0, nonMinimalCount = 0;
         MgProfile.begin();
-        java.util.LinkedHashSet<MgEdgeTuple> extensions = MgExtensions.rightmost(code, alpha);
+        java.util.LinkedHashSet<MgEdgeTuple> extensions =
+                MgExtensions.rightmost(dfsCode, alphabet);
         MgProfile.end("expand/extensions");
-        for (MgEdgeTuple e : extensions) {
-            generated++;
+        for (MgEdgeTuple extension : extensions) {
+            generatedCount++;
             result.stats.candidates++;
-            MgDFSCode child = code.extend(e);
+            MgDFSCode childCode = dfsCode.extend(extension);
             MgProfile.begin();
-            boolean minCode = MgMinCode.isMin(child);
+            boolean isMinimal = MgMinCode.isMin(childCode);
             MgProfile.end("expand/minCode");
-            if (!minCode) {
-                nonMin++;
+            if (!isMinimal) {
+                nonMinimalCount++;
                 result.stats.rejectedNonMin++;
-                if (MgLog.isTrace()) MgLog.trace("  skip (not min): %s", child.key());
+                if (MgLog.isTrace()) MgLog.trace("  skip (not min): %s", childCode.key());
                 continue;
             }
-            if (child.m() > cfg.maxM() || child.nVertices() > cfg.maxV()) {
+            if (childCode.multiplicity() > config.maxMultiplicity()
+                    || childCode.nVertices() > config.maxVertices()) {
                 result.stats.rejectedCap++;
                 if (MgLog.isTrace()) {
                     MgLog.trace("  skip (cap): %s m=%d v=%d maxM=%d maxV=%d",
-                            child.key(), child.m(), child.nVertices(), cfg.maxM(), cfg.maxV());
+                            childCode.key(), childCode.multiplicity(), childCode.nVertices(),
+                            config.maxMultiplicity(), config.maxVertices());
                 }
                 continue;
             }
             MgProfile.begin();
-            MgEval cev = MgValueCompute.evaluate(g, child, cfg.mer(),
-                    cfg.incrementalDomains() ? images : null, cfg.boundType());
+            MgEval childEvaluation = MgValueCompute.evaluate(graph, childCode, config.mer(),
+                    config.incrementalDomains() ? inheritedImages : null, config.boundType());
             MgProfile.end("expand/evaluate");
             result.stats.evaluated++;
-            if (cev.s() == 0) {
-                zeroSupport++;
+            if (childEvaluation.support() == 0) {
+                zeroSupportCount++;
                 result.stats.zeroSupport++;
             }
-            record(child, cev);
+            recordPattern(childCode, childEvaluation);
             if (MgLog.isTrace()) {
                 MgLog.trace("  child %s m=%d s=%d u=%.4f %s=%.4f theta=%.4f",
-                        child.key(), cev.m(), cev.s(), cev.u(), cfg.boundType(),
-                        cev.bound(cfg.boundType()), theta());
+                        childCode.key(), childEvaluation.multiplicity(),
+                        childEvaluation.support(), childEvaluation.utility(),
+                        config.boundType(), childEvaluation.bound(config.boundType()),
+                        currentThreshold());
             }
-            if (cev.s() > 0) {
+            if (childEvaluation.support() > 0) {
                 // keep image tables only when the child will be expanded
-                boolean keepImages = cfg.incrementalDomains() && child.m() < cfg.maxM();
-                kids.add(new Cand(child, keepImages ? cev : cev.withoutImages()));
+                boolean keepImages = config.incrementalDomains()
+                        && childCode.multiplicity() < config.maxMultiplicity();
+                children.add(new Candidate(childCode,
+                        keepImages ? childEvaluation : childEvaluation.withoutImages()));
             }
         }
         if (MgLog.isDebug()) {
             MgLog.debug("expanded depth=%d code=%s: extensions=%d kept=%d nonMin=%d zeroSupport=%d"
                             + " theta=%.4f heap=%d",
-                    depth, code.key(), generated, kids.size(), nonMin, zeroSupport, thetaIn, heap.size());
+                    depth, dfsCode.key(), generatedCount, children.size(), nonMinimalCount,
+                    zeroSupportCount, thresholdAtEntry, topKHeap.size());
         }
         maybeProgress();
         MgProfile.begin();
-        kids.sort((a, b) -> Double.compare(b.ev().bound(cfg.boundType()),
-                a.ev().bound(cfg.boundType())));
+        // Descend into the most promising child first: it raises the threshold earliest.
+        children.sort((first, second) -> Double.compare(
+                second.evaluation().bound(config.boundType()),
+                first.evaluation().bound(config.boundType())));
         MgProfile.end("expand/sort");
-        for (Cand c : kids) {
-            double bound = c.ev().bound(cfg.boundType());
-            if (cfg.prune() && bound < theta() - BOUND_EPS) {
+        for (Candidate child : children) {
+            double bound = child.evaluation().bound(config.boundType());
+            if (config.prune() && bound < currentThreshold() - BOUND_EPS) {
                 result.stats.pruned++;
                 if (MgLog.isTrace()) {
                     MgLog.trace("  prune %s: %s=%.4f < theta=%.4f",
-                            c.code().key(), cfg.boundType(), bound, theta());
+                            child.dfsCode().key(), config.boundType(), bound, currentThreshold());
                 }
                 continue;
             }
             if (MgLog.isTrace()) {
                 MgLog.trace("  descend %s: %s=%.4f >= theta=%.4f",
-                        c.code().key(), cfg.boundType(), bound, theta());
+                        child.dfsCode().key(), config.boundType(), bound, currentThreshold());
             }
-            expand(c.code(), c.ev(), c.ev().images());
+            expand(child.dfsCode(), child.evaluation(), child.evaluation().imageTable());
         }
         MgProfile.end("expand");
     }
@@ -250,75 +277,87 @@ public final class MgHUSM {
     /** Periodic progress line so long runs can be watched without TRACE volume. */
     private void maybeProgress() {
         if (!MgLog.isDebug()) return;
-        long n = result.stats.evaluated;
-        if (n >= nextProgress) {
-            nextProgress = n + PROGRESS_EVERY;
+        long evaluatedCount = result.stats.evaluated;
+        if (evaluatedCount >= nextProgressAt) {
+            nextProgressAt = evaluatedCount + PROGRESS_EVERY;
             MgLog.debug("progress evaluated=%d expanded=%d pruned=%d candidates=%d theta=%.4f"
                             + " heap=%d elapsed=%.1fms",
-                    n, result.stats.expanded, result.stats.pruned, result.stats.candidates,
-                    theta(), heap.size(), MgLog.elapsedMs());
+                    evaluatedCount, result.stats.expanded, result.stats.pruned,
+                    result.stats.candidates, currentThreshold(), topKHeap.size(),
+                    MgLog.elapsedMs());
         }
     }
 
     private Result run() {
-        long t0 = System.nanoTime();
+        long startNanos = System.nanoTime();
         MgProfile.begin();
         MgLog.info("mine start: k=%d topk=%s minUtil=%.4f mer=%d prune=%s bound=%s"
                         + " incrementalDomains=%s maxM=%d maxV=%d keepRows=%s vertices=%d"
                         + " seedTypes=%d",
-                cfg.k(), cfg.enableTopK(), cfg.minUtil(), cfg.mer(), cfg.prune(),
-                cfg.boundType(), cfg.incrementalDomains(), cfg.maxM(), cfg.maxV(),
-                cfg.keepRows(), g.n(), alpha.forwardTypes().size());
-        List<Cand> roots = new ArrayList<>();
+                config.k(), config.enableTopK(), config.minUtil(), config.mer(), config.prune(),
+                config.boundType(), config.incrementalDomains(), config.maxMultiplicity(),
+                config.maxVertices(), config.keepRows(), graph.vertexCount(),
+                alphabet.forwardTypes().size());
+        List<Candidate> rootCandidates = new ArrayList<>();
         MgProfile.begin();
-        for (SeedType st : alpha.forwardTypes()) {
-            MgDFSCode code = MgDFSCode.single(new MgEdgeTuple(0, 1, st.la(), st.le(), st.lb()));
-            if (code.m() > cfg.maxM() || code.nVertices() > cfg.maxV()) {
+        for (SeedType seed : alphabet.forwardTypes()) {
+            MgDFSCode rootCode = MgDFSCode.single(
+                    new MgEdgeTuple(0, 1, seed.labelLow(), seed.edgeLabel(), seed.labelHigh()));
+            if (rootCode.multiplicity() > config.maxMultiplicity()
+                    || rootCode.nVertices() > config.maxVertices()) {
                 result.stats.rejectedCap++;
                 continue;
             }
-            MgEval ev = MgValueCompute.evaluate(g, code, cfg.mer(), null, cfg.boundType());
+            MgEval rootEvaluation = MgValueCompute.evaluate(graph, rootCode, config.mer(), null,
+                    config.boundType());
             result.stats.evaluated++;
-            if (ev.s() == 0) result.stats.zeroSupport++;
-            record(code, ev);
+            if (rootEvaluation.support() == 0) result.stats.zeroSupport++;
+            recordPattern(rootCode, rootEvaluation);
             if (MgLog.isTrace()) {
                 MgLog.trace("root %s m=%d s=%d u=%.4f [%s=%.4f] theta=%.4f",
-                        code.key(), ev.m(), ev.s(), ev.u(), cfg.boundType(),
-                        ev.bound(cfg.boundType()), theta());
+                        rootCode.key(), rootEvaluation.multiplicity(), rootEvaluation.support(),
+                        rootEvaluation.utility(), config.boundType(),
+                        rootEvaluation.bound(config.boundType()), currentThreshold());
             }
             // avoid retaining root image tables; rebuild them on expansion
-            if (ev.s() > 0) roots.add(new Cand(code, ev.withoutImages()));
+            if (rootEvaluation.support() > 0) {
+                rootCandidates.add(new Candidate(rootCode, rootEvaluation.withoutImages()));
+            }
         }
         MgProfile.end("mine/roots");
-        result.stats.roots = roots.size();
-        MgLog.debug("roots: kept=%d theta=%.4f heap=%d", roots.size(), theta(), heap.size());
+        result.stats.roots = rootCandidates.size();
+        MgLog.debug("roots: kept=%d theta=%.4f heap=%d", rootCandidates.size(),
+                currentThreshold(), topKHeap.size());
         maybeProgress();
-        roots.sort((a, b) -> Double.compare(b.ev().bound(cfg.boundType()),
-                a.ev().bound(cfg.boundType())));
-        for (Cand c : roots) {
-            double bound = c.ev().bound(cfg.boundType());
-            if (cfg.prune() && bound < theta() - BOUND_EPS) {
+        rootCandidates.sort((first, second) -> Double.compare(
+                second.evaluation().bound(config.boundType()),
+                first.evaluation().bound(config.boundType())));
+        for (Candidate root : rootCandidates) {
+            double bound = root.evaluation().bound(config.boundType());
+            if (config.prune() && bound < currentThreshold() - BOUND_EPS) {
                 result.stats.pruned++;
                 if (MgLog.isTrace()) {
                     MgLog.trace("root prune %s: %s=%.4f < theta=%.4f",
-                            c.code().key(), cfg.boundType(), bound, theta());
+                            root.dfsCode().key(), config.boundType(), bound, currentThreshold());
                 }
                 continue;
             }
             MgProfile.begin();
-            CMNITable images = !cfg.incrementalDomains() || c.ev().m() >= cfg.maxM()
+            CMNITable rootImages = !config.incrementalDomains()
+                    || root.evaluation().multiplicity() >= config.maxMultiplicity()
                     ? null
-                    : MgOccurrences.images(g, c.code().labels(), c.code().patternEdges(), cfg.mer());
+                    : MgOccurrences.images(graph, root.dfsCode().labels(),
+                            root.dfsCode().patternEdges(), config.mer());
             MgProfile.end("mine/rootImages");
-            expand(c.code(), c.ev(), images);
+            expand(root.dfsCode(), root.evaluation(), rootImages);
         }
         MgProfile.end("mine");
-        result.stats.thetaFinal = theta();
-        if (cfg.enableTopK() && !cfg.keepRows()) {
-            double th = result.stats.thetaFinal;
-            result.top.removeIf(t -> t.u() < th);
+        result.stats.finalThreshold = currentThreshold();
+        if (config.enableTopK() && !config.keepRows()) {
+            double threshold = result.stats.finalThreshold;
+            result.top.removeIf(entry -> entry.utility() < threshold);
         }
-        result.stats.elapsedNanos = System.nanoTime() - t0;
+        result.stats.elapsedNanos = System.nanoTime() - startNanos;
         logSummary();
         MgProfile.logReport("profile (per step: calls / wall_ms / alloc_MB); mode="
                 + MgProfile.mode());
@@ -332,41 +371,51 @@ public final class MgHUSM {
                 result.stats.evaluated, result.stats.expanded, result.stats.pruned,
                 result.stats.candidates, result.stats.rejectedNonMin, result.stats.rejectedCap,
                 result.stats.zeroSupport, result.stats.roots, result.stats.maxDepth,
-                result.stats.thetaFinal, heap.size(), result.rows.size(),
+                result.stats.finalThreshold, topKHeap.size(), result.rows.size(),
                 result.stats.elapsedNanos / 1e6);
         if (!MgLog.isDebug()) return;
-        if (!cfg.enableTopK()) {
+        if (!config.enableTopK()) {
             MgLog.debug("top-k disabled: theta=minUtil=%.4f, %d entry(ies) retained",
-                    cfg.minUtil(), result.rows.isEmpty() ? result.top.size() : result.rows.size());
+                    config.minUtil(),
+                    result.rows.isEmpty() ? result.top.size() : result.rows.size());
         } else {
-            List<Double> ascending = new ArrayList<>(heap);
-            ascending.sort(null);
-            MgLog.debug("top-k heap ascending: %s", ascending);
+            List<Double> ascendingUtilities = new ArrayList<>(topKHeap);
+            ascendingUtilities.sort(null);
+            MgLog.debug("top-k heap ascending: %s", ascendingUtilities);
             if (!result.top.isEmpty()) {
-                MgLog.debug("top entries retained: %d (k=%d)", result.top.size(), cfg.k());
+                MgLog.debug("top entries retained: %d (k=%d)", result.top.size(), config.k());
             }
         }
         if (!result.rows.isEmpty()) {
-            List<Row> topRows = new ArrayList<>(result.rows);
-            topRows.sort((a, b) -> Double.compare(b.u(), a.u()));
-            int shown = 0;
-            for (Row r : topRows) {
-                if (cfg.enableTopK() && shown++ >= cfg.k()) break;
+            List<Row> rowsByUtility = new ArrayList<>(result.rows);
+            rowsByUtility.sort((first, second) -> Double.compare(second.utility(), first.utility()));
+            int shownCount = 0;
+            for (Row row : rowsByUtility) {
+                if (config.enableTopK() && shownCount++ >= config.k()) break;
                 MgLog.debug("row u=%.4f s=%d m=%d bound=%.4f %s",
-                        r.u(), r.s(), r.m(), r.bound(), r.code().key());
+                        row.utility(), row.support(), row.multiplicity(), row.bound(),
+                        row.dfsCode().key());
             }
         }
     }
 
-    /** Top-K result set (ties kept): u &gt;= thetaFinal and u &gt; 0. */
-    public static java.util.Map<String, Double> topkSet(Result res) {
-        double th = res.stats.thetaFinal;
-        java.util.Map<String, Double> out = new java.util.LinkedHashMap<>();
-        if (!res.top.isEmpty()) {
-            for (TopEntry t : res.top) if (t.u() >= th && t.u() > 0) out.put(t.code().key(), t.u());
-            return out;
+    /** Top-K result set (ties kept): utility &gt;= finalThreshold and utility &gt; 0. */
+    public static java.util.Map<String, Double> topkSet(Result mined) {
+        double threshold = mined.stats.finalThreshold;
+        java.util.Map<String, Double> patterns = new java.util.LinkedHashMap<>();
+        if (!mined.top.isEmpty()) {
+            for (TopEntry entry : mined.top) {
+                if (entry.utility() >= threshold && entry.utility() > 0) {
+                    patterns.put(entry.dfsCode().key(), entry.utility());
+                }
+            }
+            return patterns;
         }
-        for (Row r : res.rows) if (r.s() > 0 && r.u() >= th && r.u() > 0) out.put(r.code().key(), r.u());
-        return out;
+        for (Row row : mined.rows) {
+            if (row.support() > 0 && row.utility() >= threshold && row.utility() > 0) {
+                patterns.put(row.dfsCode().key(), row.utility());
+            }
+        }
+        return patterns;
     }
 }

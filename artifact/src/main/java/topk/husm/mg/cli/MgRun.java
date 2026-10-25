@@ -53,21 +53,24 @@ final class MgRun {
                 "%s: n=%d pairs=%d K=%d topK=%s minUtil=%.4f MER=%d labels=%d labelMode=%s"
                         + " weight=%s ieuBound=%s incrementalDomains=%s prune=%s maxM=%d maxV=%d"
                         + " (load=%.0fms)%n",
-                cfg.dataset(), g.n(), pairs, cfg.k(), cfg.enableTopK(), cfg.minUtil(), cfg.mer(),
+                cfg.dataset(), g.vertexCount(), pairs, cfg.k(), cfg.enableTopK(), cfg.minUtil(),
+                cfg.mer(),
                 cfg.nlabels(), cfg.labelMode(), cfg.weight(), cfg.boundType(),
-                cfg.incrementalDomains(), cfg.prune(), cfg.maxM(), cfg.maxV(), loadMs);
+                cfg.incrementalDomains(), cfg.prune(), cfg.maxMultiplicity(), cfg.maxVertices(),
+                loadMs);
 
         long t0 = System.nanoTime();
         MgHUSM.Result res = MgHUSM.mine(g, cfg.mining());
         double dt = (System.nanoTime() - t0) / 1e9;
 
         System.out.printf(Locale.ROOT, "evaluated=%d expanded=%d pruned=%d theta=%.2f time=%.1fs%n",
-                res.stats.evaluated, res.stats.expanded, res.stats.pruned, res.stats.thetaFinal, dt);
+                res.stats.evaluated, res.stats.expanded, res.stats.pruned,
+                res.stats.finalThreshold, dt);
         MgRunLog.stats(res);
 
         printPatterns(res, cfg);
 
-        List<String> report = MgReport.build(cfg, g.n(), pairs, loadMs, dt, res,
+        List<String> report = MgReport.build(cfg, g.vertexCount(), pairs, loadMs, dt, res,
                 MgReport.includeAll(opt.values()));
         MgReport.write(reportFile, report);
         MgRunLog.reportWritten(reportFile);
@@ -75,14 +78,15 @@ final class MgRun {
 
     /** Console listing: Top-K cut-off in Top-K mode, every qualifying pattern otherwise. */
     private static void printPatterns(MgHUSM.Result res, MgRunConfig cfg) {
-        res.rows.sort((a, b) -> Double.compare(b.u(), a.u()));
-        int shown = 0;
+        res.rows.sort((first, second) -> Double.compare(second.utility(), first.utility()));
+        int shownCount = 0;
         for (MgHUSM.Row row : res.rows) {
-            if (cfg.enableTopK() && shown >= cfg.k()) break;
-            if (row.s() <= 0 || row.u() + 1e-9 < cfg.minUtil()) continue;
+            if (cfg.enableTopK() && shownCount >= cfg.k()) break;
+            if (row.support() <= 0 || row.utility() + 1e-9 < cfg.minUtil()) continue;
             System.out.printf(Locale.ROOT, "  u=%10.2f s=%4d m=%d bound=%12.2f  %s%n",
-                    row.u(), row.s(), row.m(), row.bound(), row.code());
-            shown++;
+                    row.utility(), row.support(), row.multiplicity(), row.bound(),
+                    row.dfsCode());
+            shownCount++;
         }
     }
 }
