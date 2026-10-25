@@ -9,7 +9,7 @@ import topk.husm.mg.graph.MultiGraph;
 import topk.husm.mg.log.MgLog;
 import topk.husm.mg.log.MgProfile;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -25,6 +25,11 @@ import java.util.List;
  * All three are returned, so bound choice is an ablation flag, not a code path.
  * u is not anti-monotone; only the selected bound is used to prune.
  *
+ * <p>When the ball-maxima multiset holds no more than CMNI entries, "top-CMNI"
+ * degenerates into "sum of everything", i.e. EU(P) == IVU(P) exactly. The
+ * reference implementation short-circuits that case before sorting
+ * ({@code ValueCompute.topKSum}, {@code if (k >= len)}); this class does the same.
+ *
  * <p>In the multigraph model external utility lives on EDGE TYPES
  * ({@link MultiGraph#extOf(int)}) rather than on vertex labels. IVU and EU are
  * exact analogues. CEU filters by the endpoint vertex labels, i.e. only edges
@@ -34,7 +39,21 @@ import java.util.List;
  */
 public final class MgValueCompute {
 
+    /**
+     * Reusable ball-maxima buffers for the EU / CEU bounds, so a supported pattern no
+     * longer allocates an {@code ArrayList<Double>} (plus its boxed elements) per
+     * evaluation. One buffer per bound is enough: {@link MgHUSM} mines on a single
+     * thread, so {@link #evaluate} is never entered concurrently.
+     */
+    private static double[] euMaxima = new double[0];
+    private static double[] ceuMaxima = new double[0];
+
     private MgValueCompute() {
+    }
+
+    /** Grows {@code buf} to hold at least {@code need} doubles (keeps the old one if big enough). */
+    private static double[] ensureCapacity(double[] buf, int need) {
+        return buf.length >= need ? buf : new double[Math.max(need, 64)];
     }
 
     /** @param s CMNI support, @param m pattern multiplicity, @param u exact utility,
@@ -116,24 +135,37 @@ public final class MgValueCompute {
         int balls = 0;
         if (needIvu || needEu || needCeu) {
             int labelI0 = labels[0];
-            List<Double> maxAll = needEu ? new ArrayList<>(s) : null;
-            List<Double> maxGe = needCeu ? new ArrayList<>(s) : null;
+            int nBalls = img.images(0).size();
+            double[] maxAll = needEu ? (euMaxima = ensureCapacity(euMaxima, nBalls)) : null;
+            double[] maxGe = needCeu ? (ceuMaxima = ensureCapacity(ceuMaxima, nBalls)) : null;
+            int nAll = 0, nGe = 0;
+            double sumGe = 0;
             MgProfile.begin();
             for (int r : img.images(0)) {
                 // O2 lives inside EsvCache: this call reads the memo unless --no-esv-cache is set.
                 double bestAll = g.ballBestExt(r, mer);
                 if (bestAll == Double.NEGATIVE_INFINITY) continue;
                 balls++;
-                if (needIvu) ivu += bestAll;
-                if (needEu) maxAll.add(bestAll);
+                // IVU is the plain sum of these same maxima: one add per ball, no alloc.
+                // EU reuses it verbatim whenever top-s degenerates to "sum of everything".
+                ivu += bestAll;
+                if (needEu) maxAll[nAll++] = bestAll;
                 if (needCeu) {
                     double bestGe = g.ballBestExtAtLeast(r, mer, labelI0);
-                    if (bestGe != Double.NEGATIVE_INFINITY) maxGe.add(bestGe);
+                    if (bestGe != Double.NEGATIVE_INFINITY) {
+                        maxGe[nGe++] = bestGe;
+                        sumGe += bestGe;
+                    }
                 }
             }
             MgProfile.end("eval/bounds");
-            if (needEu) eu = topSum(maxAll, s);
-            if (needCeu) ceu = topSum(maxGe, s);
+            // HUSM Def. 13: EU is the top-CMNI sum over the ball maxima, so when the
+            // multiset holds at most s = CMNI entries the top-s selection takes every
+            // element and EU(P) == IVU(P) exactly -- no sort needed. This mirrors the
+            // reference implementation's own shortcut (ValueCompute.topKSum:
+            // "if (k >= len)"), and it fires for ~87% of supported patterns at MER=3.
+            if (needEu) eu = nAll > s ? topSum(maxAll, nAll, s) : ivu;
+            if (needCeu) ceu = nGe > s ? topSum(maxGe, nGe, s) : sumGe;
         }
         if (MgLog.isTrace()) {
             MgLog.trace("eval %s: s=%d m=%d u=%.4f ivu=%.4f eu=%.4f ceu=%.4f columns=%s balls=%d",
@@ -142,12 +174,16 @@ public final class MgValueCompute {
         return new MgEval(s, m, u, ivu, eu, ceu, img);
     }
 
-    /** Sum of the {@code k} largest values; sorts {@code values} in place (caller owns it). */
-    private static double topSum(List<Double> values, int k) {
-        if (k <= 0 || values.isEmpty()) return 0;
-        values.sort(java.util.Comparator.reverseOrder());
+    /**
+     * Sum of the {@code k} largest entries of {@code values[0..n)}; sorts that prefix in place.
+     * Same quantity as the reference {@code ValueCompute.topKSum}, except that it sorts the
+     * caller's reusable buffer instead of copying the array per call.
+     */
+    private static double topSum(double[] values, int n, int k) {
+        if (k <= 0 || n <= 0) return 0;
+        Arrays.sort(values, 0, n);
         double total = 0;
-        for (int i = 0; i < Math.min(k, values.size()); i++) total += values.get(i);
+        for (int i = n - 1, stop = Math.max(0, n - k); i >= stop; i--) total += values[i];
         return total;
     }
 }
