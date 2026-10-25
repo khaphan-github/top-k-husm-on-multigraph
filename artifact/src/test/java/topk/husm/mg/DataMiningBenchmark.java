@@ -92,7 +92,7 @@ public class DataMiningBenchmark {
             int patterns = MgHUSM.topkSet(last).size();
             System.out.printf("stats: patterns=%d evaluated=%d expanded=%d pruned=%d theta=%.4f%n",
                     patterns, last.stats.evaluated, last.stats.expanded,
-                    last.stats.pruned, last.stats.thetaFinal);
+                    last.stats.pruned, last.stats.finalThreshold);
         }
     }
 

@@ -55,37 +55,44 @@ public final class VerifyMgRunReport {
 
         MultiGraph g = MgGraphLoader.build(edges, nlabels, seed, wdist, VertexLabelMode.RANDOM);
         System.out.printf(Locale.ROOT, "graph: %s n=%d pairs=%d instances=%d labels=%s%n",
-                edges.getFileName(), g.n(), countPairs(g), countInstances(g), labels(g));
+                edges.getFileName(), g.vertexCount(), countPairs(g), countInstances(g),
+                labels(g));
 
         Map<String, MgDFSCode> canonical = canonicalPatterns(g);
         Map<String, MgBruteForce.EvalExt> evaluated = new TreeMap<>();
         for (MgDFSCode code : canonical.values()) {
-            MgBruteForce.EvalExt ev = MgBruteForce.evaluateExt(g, toBfPattern(code), mer);
-            if (ev.s() > 0) evaluated.put(code.key(), ev);
+            MgBruteForce.EvalExt evaluation = MgBruteForce.evaluateExt(g, toBfPattern(code), mer);
+            if (evaluation.support() > 0) evaluated.put(code.key(), evaluation);
         }
 
         List<Row> rows = parseReport(report);
         List<String> problems = new ArrayList<>();
         Set<String> reported = new HashSet<>();
         for (int i = 0; i < rows.size(); i++) {
-            Row r = rows.get(i);
-            if (!reported.add(r.code)) problems.add("row " + i + ": duplicate code " + r.code);
-            MgBruteForce.EvalExt ev = evaluated.get(r.code);
-            if (ev == null) {
-                problems.add("row " + i + ": no occurrence in the edge-subset oracle: " + r.code);
+            Row row = rows.get(i);
+            if (!reported.add(row.code)) problems.add("row " + i + ": duplicate code " + row.code);
+            MgBruteForce.EvalExt evaluation = evaluated.get(row.code);
+            if (evaluation == null) {
+                problems.add("row " + i + ": no occurrence in the edge-subset oracle: "
+                        + row.code);
                 continue;
             }
-            if (ev.s() != r.s) problems.add("row " + i + ": s=" + r.s + " oracle=" + ev.s());
-            if (ev.m() != r.m) problems.add("row " + i + ": m=" + r.m + " oracle=" + ev.m());
-            if (Math.abs(ev.u() - r.u) > 0.0051) {
+            if (evaluation.support() != row.s) {
+                problems.add("row " + i + ": s=" + row.s + " oracle=" + evaluation.support());
+            }
+            if (evaluation.multiplicity() != row.m) {
+                problems.add("row " + i + ": m=" + row.m + " oracle="
+                        + evaluation.multiplicity());
+            }
+            if (Math.abs(evaluation.utility() - row.u) > 0.0051) {
                 problems.add(String.format(Locale.ROOT, "row %d: u=%.2f oracle=%.4f %s",
-                        i, r.u, ev.u(), r.code));
+                        i, row.u, evaluation.utility(), row.code));
             }
-            if (Math.abs(ev.ivu() - r.bound) > 0.0051) {
+            if (Math.abs(evaluation.ivuBound() - row.bound) > 0.0051) {
                 problems.add(String.format(Locale.ROOT, "row %d: bound=%.2f oracle=%.4f %s",
-                        i, r.bound, ev.ivu(), r.code));
+                        i, row.bound, evaluation.ivuBound(), row.code));
             }
-            if (i > 0 && rows.get(i - 1).u < r.u - 1e-9) {
+            if (i > 0 && rows.get(i - 1).u < row.u - 1e-9) {
                 problems.add("row " + i + ": u descending order broken");
             }
         }
@@ -139,11 +146,11 @@ public final class VerifyMgRunReport {
     private static Map<String, MgDFSCode> canonicalPatterns(MultiGraph g) {
         List<int[]> instances = new ArrayList<>(); // {u, v, type}
         List<Integer> types = g.distinctTypes();
-        for (int u = 0; u < g.n(); u++) {
+        for (int u = 0; u < g.vertexCount(); u++) {
             for (int v : g.neighbors(u)) {
                 if (u >= v) continue;
                 for (int t : types) {
-                    int c = g.typeCount(u, v, t);
+                    int c = g.parallelEdgeCount(u, v, t);
                     for (int k = 0; k < c; k++) instances.add(new int[] {u, v, t});
                 }
             }
@@ -165,7 +172,7 @@ public final class VerifyMgRunReport {
             int idx = 0;
             for (int v : verts) {
                 local.put(v, idx);
-                labels[idx++] = g.vlabel(v);
+                labels[idx++] = g.vertexLabel(v);
             }
             for (int k = 0; k < e; k++) {
                 if ((mask >>> k & 1) == 0) continue;
@@ -223,40 +230,45 @@ public final class VerifyMgRunReport {
     }
 
     private static MgBruteForce.Pattern toBfPattern(MgDFSCode code) {
-        Map<MgBruteForce.PatKey, Integer> k = new HashMap<>();
-        for (MgEdge e : code.patternEdges()) {
-            int lo = Math.min(e.a(), e.b()), hi = Math.max(e.a(), e.b());
-            for (VecLabel.Comp c : e.le().comps()) {
-                k.merge(new MgBruteForce.PatKey(lo, hi, c.type()), c.mult(), Integer::sum);
+        Map<MgBruteForce.PatKey, Integer> typeMultiplicities = new HashMap<>();
+        for (MgEdge edge : code.patternEdges()) {
+            int lowVertex = Math.min(edge.fromVertex(), edge.toVertex());
+            int highVertex = Math.max(edge.fromVertex(), edge.toVertex());
+            for (VecLabel.Comp component : edge.edgeLabel().components()) {
+                typeMultiplicities.merge(
+                        new MgBruteForce.PatKey(lowVertex, highVertex, component.type()),
+                        component.multiplicity(), Integer::sum);
             }
         }
-        return new MgBruteForce.Pattern(code.labels(), k);
+        return new MgBruteForce.Pattern(code.labels(), typeMultiplicities);
     }
 
-    private static int countPairs(MultiGraph g) {
-        int n = 0;
-        for (int u = 0; u < g.n(); u++) for (int v : g.neighbors(u)) if (u < v) n++;
-        return n;
+    private static int countPairs(MultiGraph graph) {
+        int pairCount = 0;
+        for (int vertex = 0; vertex < graph.vertexCount(); vertex++) {
+            for (int neighbor : graph.neighbors(vertex)) if (vertex < neighbor) pairCount++;
+        }
+        return pairCount;
     }
 
-    private static int countInstances(MultiGraph g) {
-        int n = 0;
-        List<Integer> types = g.distinctTypes();
-        for (int u = 0; u < g.n(); u++) {
-            for (int v : g.neighbors(u)) {
-                if (u >= v) continue;
-                for (int t : types) n += g.typeCount(u, v, t);
+    private static int countInstances(MultiGraph graph) {
+        int instanceCount = 0;
+        List<Integer> types = graph.distinctTypes();
+        for (int vertex = 0; vertex < graph.vertexCount(); vertex++) {
+            for (int neighbor : graph.neighbors(vertex)) {
+                if (vertex >= neighbor) continue;
+                for (int type : types) instanceCount += graph.parallelEdgeCount(vertex, neighbor, type);
             }
         }
-        return n;
+        return instanceCount;
     }
 
-    private static String labels(MultiGraph g) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int v = 0; v < g.n(); v++) {
-            if (v > 0) sb.append(", ");
-            sb.append(g.vlabel(v));
+    private static String labels(MultiGraph graph) {
+        StringBuilder text = new StringBuilder("[");
+        for (int vertex = 0; vertex < graph.vertexCount(); vertex++) {
+            if (vertex > 0) text.append(", ");
+            text.append(graph.vertexLabel(vertex));
         }
-        return sb.append(']').toString();
+        return text.append(']').toString();
     }
 }

@@ -36,7 +36,9 @@ class MgHUSMEquivalenceTest {
                     new MgHUSM.Config(1_000_000_000, 1, false));
             Set<String> tree = new HashSet<>();
             for (MgHUSM.Row row : full.rows) {
-                if (row.s() > 0 && row.m() <= k) tree.add(abstractKey(row.code().labels(), row.code().patternEdges()));
+                if (row.support() > 0 && row.multiplicity() <= k) {
+                    tree.add(abstractKey(row.dfsCode().labels(), row.dfsCode().patternEdges()));
+                }
             }
             Set<String> expected = new HashSet<>();
             Set<String> seenKeys = new HashSet<>();
@@ -46,8 +48,9 @@ class MgHUSMEquivalenceTest {
                 if (!seenKeys.add(key)) continue;
                 // re-anchor I0 before evaluating
                 MgDFSCode anchored = MgDFSCode.of(MgMinCode.minCodeOf(p.labels, rawEdges));
-                MgBruteForce.EvalExt e = MgBruteForce.evaluateExt(g, toBfPattern(anchored), 1);
-                if (e.s() >= 1) expected.add(key);
+                MgBruteForce.EvalExt evaluation = MgBruteForce.evaluateExt(
+                        g, toBfPattern(anchored), 1);
+                if (evaluation.support() >= 1) expected.add(key);
             }
             assertEquals(expected, tree, "seed=" + seed + " |tree|=" + tree.size()
                     + " |expected|=" + expected.size());
@@ -61,27 +64,33 @@ class MgHUSMEquivalenceTest {
         MultiGraph g = MgTestGraphs.randomData(7, 3, 2, 2, 0, 2, 2);
         MgHUSM.Result full = MgHUSM.mine(g,
                 new MgHUSM.Config(1_000_000_000, 1, false));
-        java.util.Random r = new java.util.Random(99);
+        java.util.Random random = new java.util.Random(99);
         int checked = 0;
         for (MgHUSM.Row row : full.rows) {
             if (checked >= 60) break;
-            int[] labels = row.code().labels();
-            List<MgEdge> edges = row.code().patternEdges();
-            int n = labels.length;
-            int[] perm = new int[n];
-            for (int i = 0; i < n; i++) perm[i] = i;
-            for (int i = n - 1; i > 0; i--) {
-                int j = r.nextInt(i + 1);
-                int t = perm[i];
-                perm[i] = perm[j];
-                perm[j] = t;
+            int[] labels = row.dfsCode().labels();
+            List<MgEdge> edges = row.dfsCode().patternEdges();
+            int vertexCount = labels.length;
+            int[] permutation = new int[vertexCount];
+            for (int vertex = 0; vertex < vertexCount; vertex++) permutation[vertex] = vertex;
+            for (int index = vertexCount - 1; index > 0; index--) {
+                int swapWith = random.nextInt(index + 1);
+                int swap = permutation[index];
+                permutation[index] = permutation[swapWith];
+                permutation[swapWith] = swap;
             }
-            int[] lab2 = new int[n];
-            for (int i = 0; i < n; i++) lab2[perm[i]] = labels[i];
-            List<MgEdge> ed2 = new ArrayList<>();
-            for (MgEdge e : edges) ed2.add(new MgEdge(perm[e.a()], perm[e.b()], e.le()));
-            assertEquals(MgMinCode.minCodeOf(labels, edges), MgMinCode.minCodeOf(lab2, ed2),
-                    "code=" + row.code());
+            int[] permutedLabels = new int[vertexCount];
+            for (int vertex = 0; vertex < vertexCount; vertex++) {
+                permutedLabels[permutation[vertex]] = labels[vertex];
+            }
+            List<MgEdge> permutedEdges = new ArrayList<>();
+            for (MgEdge edge : edges) {
+                permutedEdges.add(new MgEdge(permutation[edge.fromVertex()],
+                        permutation[edge.toVertex()], edge.edgeLabel()));
+            }
+            assertEquals(MgMinCode.minCodeOf(labels, edges),
+                    MgMinCode.minCodeOf(permutedLabels, permutedEdges),
+                    "code=" + row.dfsCode());
             checked++;
         }
         assertTrue(checked > 10);
@@ -97,12 +106,13 @@ class MgHUSMEquivalenceTest {
                 MgHUSM.Result full = MgHUSM.mine(g,
                         new MgHUSM.Config(1_000_000_000, mer, false));
                 for (MgHUSM.Row row : full.rows) {
-                    MgBruteForce.Pattern p = toBfPattern(row.code());
-                    MgBruteForce.EvalExt e = MgBruteForce.evaluateExt(g, p, mer);
-                    String ctx = "ext seed=" + seed + " mer=" + mer + " code=" + row.code();
-                    assertEquals(e.s(), row.s(), ctx);
-                    assertEquals(e.u(), row.u(), 1e-9, ctx);
-                    assertEquals(e.ivu(), row.bound(), 1e-9, ctx);
+                    MgBruteForce.Pattern pattern = toBfPattern(row.dfsCode());
+                    MgBruteForce.EvalExt expected = MgBruteForce.evaluateExt(g, pattern, mer);
+                    String context = "ext seed=" + seed + " mer=" + mer + " code="
+                            + row.dfsCode();
+                    assertEquals(expected.support(), row.support(), context);
+                    assertEquals(expected.utility(), row.utility(), 1e-9, context);
+                    assertEquals(expected.ivuBound(), row.bound(), 1e-9, context);
                 }
                 combos++;
             }
@@ -120,14 +130,16 @@ class MgHUSMEquivalenceTest {
                 MgHUSM.Result full = MgHUSM.mine(g,
                         new MgHUSM.Config(1_000_000_000, mer, false));
                 Map<String, Double> boundByParentKey = new HashMap<>();
-                for (MgHUSM.Row row : full.rows) boundByParentKey.put(row.code().key(), row.bound());
                 for (MgHUSM.Row row : full.rows) {
-                    if (row.code().size() <= 1) continue;
-                    Double parentBound = boundByParentKey.get(row.code().parentKey());
+                    boundByParentKey.put(row.dfsCode().key(), row.bound());
+                }
+                for (MgHUSM.Row row : full.rows) {
+                    if (row.dfsCode().size() <= 1) continue;
+                    Double parentBound = boundByParentKey.get(row.dfsCode().parentKey());
                     if (parentBound == null) continue;
-                    assertTrue(row.u() <= parentBound + 1e-9,
-                            "ext u(child)=" + row.u() + " > IEU(parent)=" + parentBound
-                                    + " code=" + row.code());
+                    assertTrue(row.utility() <= parentBound + 1e-9,
+                            "ext u(child)=" + row.utility() + " > IEU(parent)=" + parentBound
+                                    + " code=" + row.dfsCode());
                     checked++;
                 }
             }
@@ -169,7 +181,7 @@ class MgHUSMEquivalenceTest {
                 MgHUSM.Result noTopK = MgHUSM.mine(g, new MgHUSM.Config(
                         1, mer, false, false, Integer.MAX_VALUE,
                         Integer.MAX_VALUE, MgBoundType.IVU, true, false));
-                assertEquals(0.0, noTopK.stats.thetaFinal, "seed=" + seed + " mer=" + mer);
+                assertEquals(0.0, noTopK.stats.finalThreshold, "seed=" + seed + " mer=" + mer);
                 assertEquals(MgHUSM.topkSet(all), MgHUSM.topkSet(noTopK),
                         "seed=" + seed + " mer=" + mer);
                 runs++;
@@ -199,7 +211,7 @@ class MgHUSMEquivalenceTest {
                     }
                     assertEquals(expected, MgHUSM.topkSet(cut),
                             "seed=" + seed + " mer=" + mer + " minUtil=" + minUtil);
-                    assertEquals(minUtil, cut.stats.thetaFinal, 1e-9,
+                    assertEquals(minUtil, cut.stats.finalThreshold, 1e-9,
                             "theta must equal the minUtil floor");
                     runs++;
                 }
@@ -210,55 +222,66 @@ class MgHUSMEquivalenceTest {
 
     // ---- helpers ------------------------------------------------------------------
     private static MgBruteForce.Pattern toBfPattern(MgDFSCode code) {
-        Map<MgBruteForce.PatKey, Integer> k = new HashMap<>();
-        for (MgEdge e : code.patternEdges()) {
-            int lo = Math.min(e.a(), e.b()), hi = Math.max(e.a(), e.b());
-            for (VecLabel.Comp c : e.le().comps()) {
-                k.merge(new MgBruteForce.PatKey(lo, hi, c.type()), c.mult(), Integer::sum);
+        Map<MgBruteForce.PatKey, Integer> edgeTypeCounts = new HashMap<>();
+        for (MgEdge edge : code.patternEdges()) {
+            int lowVertex = Math.min(edge.fromVertex(), edge.toVertex());
+            int highVertex = Math.max(edge.fromVertex(), edge.toVertex());
+            for (VecLabel.Comp component : edge.edgeLabel().components()) {
+                edgeTypeCounts.merge(
+                        new MgBruteForce.PatKey(lowVertex, highVertex, component.type()),
+                        component.multiplicity(), Integer::sum);
             }
         }
-        return new MgBruteForce.Pattern(code.labels(), k);
+        return new MgBruteForce.Pattern(code.labels(), edgeTypeCounts);
     }
 
-    private static List<MgEdge> bfPatternEdges(MgBruteForce.Pattern p) {
+    private static List<MgEdge> bfPatternEdges(MgBruteForce.Pattern pattern) {
         List<MgEdge> out = new ArrayList<>();
-        for (Map.Entry<long[], Map<Integer, Integer>> e : p.pairsRaw().entrySet()) {
-            int a = (int) e.getKey()[0], b = (int) e.getKey()[1];
-            List<VecLabel.Comp> comps = new ArrayList<>();
-            for (Map.Entry<Integer, Integer> tm : e.getValue().entrySet()) {
-                comps.add(new VecLabel.Comp(tm.getKey(), tm.getValue()));
+        for (Map.Entry<long[], Map<Integer, Integer>> entry : pattern.pairsRaw().entrySet()) {
+            int fromVertex = (int) entry.getKey()[0];
+            int toVertex = (int) entry.getKey()[1];
+            List<VecLabel.Comp> components = new ArrayList<>();
+            for (Map.Entry<Integer, Integer> typeCount : entry.getValue().entrySet()) {
+                components.add(new VecLabel.Comp(typeCount.getKey(), typeCount.getValue()));
             }
-            out.add(new MgEdge(a, b, VecLabel.of(comps)));
+            out.add(new MgEdge(fromVertex, toVertex, VecLabel.of(components)));
         }
         return out;
     }
 
     /** Canonical key under all vertex permutations, independent of MgMinCode. */
     private static String abstractKey(int[] labels, List<MgEdge> edges) {
-        int n = labels.length;
-        int[] perm = new int[n];
-        for (int i = 0; i < n; i++) perm[i] = i;
+        int vertexCount = labels.length;
+        int[] permutation = new int[vertexCount];
+        for (int vertex = 0; vertex < vertexCount; vertex++) permutation[vertex] = vertex;
         String best = null;
         do {
-            int[] lab = new int[n];
-            for (int old = 0; old < n; old++) lab[perm[old]] = labels[old];
-            List<String> es = new ArrayList<>();
-            for (MgEdge e : edges) {
-                int a = perm[e.a()], b = perm[e.b()];
-                int lo = Math.min(a, b), hi = Math.max(a, b);
-                es.add(lo + "," + hi + "," + canonLe(e.le()));
+            int[] permutedLabels = new int[vertexCount];
+            for (int vertex = 0; vertex < vertexCount; vertex++) {
+                permutedLabels[permutation[vertex]] = labels[vertex];
             }
-            java.util.Collections.sort(es);
-            String cand = java.util.Arrays.toString(lab) + "|" + String.join(";", es);
-            if (best == null || cand.compareTo(best) < 0) best = cand;
-        } while (nextPermutation(perm));
+            List<String> encodedEdges = new ArrayList<>();
+            for (MgEdge edge : edges) {
+                int fromVertex = permutation[edge.fromVertex()];
+                int toVertex = permutation[edge.toVertex()];
+                int lowVertex = Math.min(fromVertex, toVertex);
+                int highVertex = Math.max(fromVertex, toVertex);
+                encodedEdges.add(lowVertex + "," + highVertex + "," + canonLe(edge.edgeLabel()));
+            }
+            java.util.Collections.sort(encodedEdges);
+            String candidate = java.util.Arrays.toString(permutedLabels) + "|"
+                    + String.join(";", encodedEdges);
+            if (best == null || candidate.compareTo(best) < 0) best = candidate;
+        } while (nextPermutation(permutation));
         return best;
     }
 
-    private static String canonLe(VecLabel le) {
-        StringBuilder sb = new StringBuilder();
-        for (VecLabel.Comp c : le.comps()) sb.append(c.type()).append(':').append(c.mult()).append(',');
-        return sb.toString();
+    private static String canonLe(VecLabel edgeLabel) {
+        StringBuilder text = new StringBuilder();
+        for (VecLabel.Comp component : edgeLabel.components()) {
+            text.append(component.type()).append(':').append(component.multiplicity()).append(',');
+        }
+        return text.toString();
     }
 
     /** Lexicographic next permutation. */

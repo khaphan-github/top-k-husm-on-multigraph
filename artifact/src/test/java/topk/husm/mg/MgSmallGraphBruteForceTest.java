@@ -47,10 +47,10 @@ class MgSmallGraphBruteForceTest {
     }
 
     /** Oracle-derived values for one canonical pattern. */
-    private record OraclePattern(MgDFSCode code, int s, int m, double u, double ivu, double eu,
-                                 double ceu, String key) {
+    private record OraclePattern(MgDFSCode dfsCode, int support, int multiplicity, double utility,
+                                 double ivuBound, double euBound, double ceuBound, String key) {
         int nVertices() {
-            return code.nVertices();
+            return dfsCode.nVertices();
         }
     }
 
@@ -106,23 +106,23 @@ class MgSmallGraphBruteForceTest {
         for (NamedGraph ng : graphs) {
             for (int mer : MERS) {
                 Map<String, OraclePattern> byAbstract = oraclePatterns(ng.g(), mer);
-                for (OraclePattern p : byAbstract.values()) {
-                    assertTrue(p.u() <= p.ivu() + EPS,
-                            ng.name() + " mer=" + mer + " u>IVU on " + p.code());
+                for (OraclePattern pattern : byAbstract.values()) {
+                    assertTrue(pattern.utility() <= pattern.ivuBound() + EPS,
+                            ng.name() + " mer=" + mer + " u>IVU on " + pattern.dfsCode());
                     checkedBounds++;
                 }
 
                 MgHUSM.Result full = MgHUSM.mine(ng.g(),
                         new MgHUSM.Config(1_000_000_000, mer, false, true));
                 Map<String, MgHUSM.Row> byCode = new HashMap<>();
-                for (MgHUSM.Row r : full.rows) byCode.put(r.code().key(), r);
-                for (MgHUSM.Row r : full.rows) {
-                    if (r.code().size() <= 1) continue;
-                    MgHUSM.Row parent = byCode.get(r.code().parentKey());
+                for (MgHUSM.Row row : full.rows) byCode.put(row.dfsCode().key(), row);
+                for (MgHUSM.Row row : full.rows) {
+                    if (row.dfsCode().size() <= 1) continue;
+                    MgHUSM.Row parent = byCode.get(row.dfsCode().parentKey());
                     if (parent == null) continue;
-                    assertTrue(r.bound() <= parent.bound() + EPS,
+                    assertTrue(row.bound() <= parent.bound() + EPS,
                             ng.name() + " mer=" + mer + " IEU(child)>IEU(parent): "
-                                    + r.code() + " vs " + parent.code());
+                                    + row.dfsCode() + " vs " + parent.dfsCode());
                     checkedTreeEdges++;
                 }
             }
@@ -141,9 +141,9 @@ class MgSmallGraphBruteForceTest {
             MgAlphabet alpha = new MgAlphabet(g.seedTypes());
             for (int mer : new int[] {1, 2}) {
                 Set<String> seen = new HashSet<>();
-                for (MultiGraph.SeedType st : alpha.forwardTypes()) {
-                    MgDFSCode root = MgDFSCode.single(
-                            new MgEdgeTuple(0, 1, st.la(), st.le(), st.lb()));
+                for (MultiGraph.SeedType seedType : alpha.forwardTypes()) {
+                    MgDFSCode root = MgDFSCode.single(new MgEdgeTuple(0, 1,
+                            seedType.labelLow(), seedType.edgeLabel(), seedType.labelHigh()));
                     checked += checkIncrementalDomains(g, root, mer, 3, 4, alpha, seen);
                 }
             }
@@ -160,7 +160,10 @@ class MgSmallGraphBruteForceTest {
         int checked = 1;
         for (MgEdgeTuple e : MgExtensions.rightmost(code, alpha)) {
             MgDFSCode child = code.extend(e);
-            if (!MgMinCode.isMin(child) || child.m() > maxM || child.nVertices() > maxV) continue;
+            if (!MgMinCode.isMin(child) || child.multiplicity() > maxM
+                    || child.nVertices() > maxV) {
+                continue;
+            }
             CMNITable fresh = MgOccurrences.images(g, child.labels(), child.patternEdges(), mer);
             CMNITable inc = MgOccurrences.images(g, child.labels(), child.patternEdges(), mer, scratch);
             assertEquals(fresh.cmni(), inc.cmni(), "support differs for " + child);
@@ -199,8 +202,10 @@ class MgSmallGraphBruteForceTest {
         int checked = 0;
         int treeEdges = 0;
         for (NamedGraph ng : fixtures()) {
-            checked += assertTopGraphMatchesOracle(ng, ng.g().allWeightsFlat().length, ng.g().n());
-            treeEdges += countTopTreeEdges(ng, ng.g().allWeightsFlat().length, ng.g().n());
+            checked += assertTopGraphMatchesOracle(ng, ng.g().allWeightsFlat().length,
+                    ng.g().vertexCount());
+            treeEdges += countTopTreeEdges(ng, ng.g().allWeightsFlat().length,
+                    ng.g().vertexCount());
         }
         NamedGraph f8 = topCmnIeuFixture();
         checked += assertTopGraphMatchesOracle(f8, 4, 4);
@@ -208,15 +213,15 @@ class MgSmallGraphBruteForceTest {
         for (long seed = 1; seed <= 3; seed++) {
             MultiGraph g3 = MgTestGraphs.randomData(seed, 3, 2, 2, 0, 2, 2);
             checked += assertTopGraphMatchesOracle(new NamedGraph("random3-seed" + seed, g3),
-                    g3.allWeightsFlat().length, g3.n());
+                    g3.allWeightsFlat().length, g3.vertexCount());
             treeEdges += countTopTreeEdges(new NamedGraph("random3-seed" + seed, g3),
-                    g3.allWeightsFlat().length, g3.n());
+                    g3.allWeightsFlat().length, g3.vertexCount());
 
             MultiGraph g4 = MgTestGraphs.randomData(seed + 100, 4, 2, 1, 1, 1, 2);
             checked += assertTopGraphMatchesOracle(new NamedGraph("random4-seed" + seed, g4),
-                    g4.allWeightsFlat().length, g4.n());
+                    g4.allWeightsFlat().length, g4.vertexCount());
             treeEdges += countTopTreeEdges(new NamedGraph("random4-seed" + seed, g4),
-                    g4.allWeightsFlat().length, g4.n());
+                    g4.allWeightsFlat().length, g4.vertexCount());
         }
         try {
             MultiGraph eight = MgGraphLoader.build(
@@ -264,11 +269,11 @@ class MgSmallGraphBruteForceTest {
             MultiGraph g = MgTestGraphs.randomData(seed, 3, 2, 2, 0, 2, 2);
             for (int k : new int[] {1, 3, 10}) {
                 MgHUSM.Result un = MgHUSM.mine(g,
-                        new MgHUSM.Config(k, 1, false, false, g.allWeightsFlat().length, g.n(),
-                                MgBoundType.EU));
+                        new MgHUSM.Config(k, 1, false, false, g.allWeightsFlat().length,
+                                g.vertexCount(), MgBoundType.EU));
                 MgHUSM.Result pr = MgHUSM.mine(g,
-                        new MgHUSM.Config(k, 1, true, false, g.allWeightsFlat().length, g.n(),
-                                MgBoundType.EU));
+                        new MgHUSM.Config(k, 1, true, false, g.allWeightsFlat().length,
+                                g.vertexCount(), MgBoundType.EU));
                 assertEquals(MgHUSM.topkSet(un), MgHUSM.topkSet(pr), "random3 seed=" + seed + " K=" + k);
                 runs++;
             }
@@ -281,38 +286,46 @@ class MgSmallGraphBruteForceTest {
         for (int mer : new int[] {1, 2, 3}) {
             Map<String, OraclePattern> expected = oraclePatterns(ng.g(), mer, maxM, maxV);
             Map<String, OraclePattern> byCode = new HashMap<>();
-            for (OraclePattern p : expected.values()) byCode.put(p.code().key(), p);
-            for (OraclePattern p : expected.values()) {
-                assertTrue(p.u() <= p.eu() + EPS,
-                        ng.name() + " mer=" + mer + " u>EU on " + p.code());
-                assertTrue(p.eu() <= p.ivu() + EPS,
-                        ng.name() + " mer=" + mer + " EU>IVU on " + p.code());
-                assertTrue(p.ceu() <= p.eu() + EPS,
-                        ng.name() + " mer=" + mer + " CEU>EU on " + p.code());
+            for (OraclePattern pattern : expected.values()) {
+                byCode.put(pattern.dfsCode().key(), pattern);
+            }
+            for (OraclePattern pattern : expected.values()) {
+                assertTrue(pattern.utility() <= pattern.euBound() + EPS,
+                        ng.name() + " mer=" + mer + " u>EU on " + pattern.dfsCode());
+                assertTrue(pattern.euBound() <= pattern.ivuBound() + EPS,
+                        ng.name() + " mer=" + mer + " EU>IVU on " + pattern.dfsCode());
+                assertTrue(pattern.ceuBound() <= pattern.euBound() + EPS,
+                        ng.name() + " mer=" + mer + " CEU>EU on " + pattern.dfsCode());
                 checked++;
             }
 
             MgHUSM.Result top = MgHUSM.mine(ng.g(),
                     new MgHUSM.Config(1_000_000_000, mer, false, true, maxM, maxV,
                             MgBoundType.EU));
-            for (MgHUSM.Row r : top.rows) {
-                if (r.s() == 0) continue;
-                OraclePattern p = byCode.get(r.code().key());
-                assertNotNull(p, ng.name() + " mer=" + mer + " unexpected " + r.code());
-                assertEquals(p.s(), r.s(), ng.name() + " mer=" + mer + " s");
-                assertEquals(p.m(), r.m(), ng.name() + " mer=" + mer + " m");
-                assertEquals(p.u(), r.u(), EPS, ng.name() + " mer=" + mer + " u");
-                assertEquals(p.eu(), r.bound(), EPS, ng.name() + " mer=" + mer + " EU bound");
+            for (MgHUSM.Row row : top.rows) {
+                if (row.support() == 0) continue;
+                OraclePattern pattern = byCode.get(row.dfsCode().key());
+                assertNotNull(pattern,
+                        ng.name() + " mer=" + mer + " unexpected " + row.dfsCode());
+                assertEquals(pattern.support(), row.support(), ng.name() + " mer=" + mer + " s");
+                assertEquals(pattern.multiplicity(), row.multiplicity(),
+                        ng.name() + " mer=" + mer + " m");
+                assertEquals(pattern.utility(), row.utility(), EPS,
+                        ng.name() + " mer=" + mer + " u");
+                assertEquals(pattern.euBound(), row.bound(), EPS,
+                        ng.name() + " mer=" + mer + " EU bound");
             }
 
             MgHUSM.Result ceu = MgHUSM.mine(ng.g(),
                     new MgHUSM.Config(1_000_000_000, mer, false, true, maxM, maxV,
                             MgBoundType.CEU));
-            for (MgHUSM.Row r : ceu.rows) {
-                if (r.s() == 0) continue;
-                OraclePattern p = byCode.get(r.code().key());
-                assertNotNull(p, ng.name() + " mer=" + mer + " unexpected " + r.code());
-                assertEquals(p.ceu(), r.bound(), EPS, ng.name() + " mer=" + mer + " CEU bound");
+            for (MgHUSM.Row row : ceu.rows) {
+                if (row.support() == 0) continue;
+                OraclePattern pattern = byCode.get(row.dfsCode().key());
+                assertNotNull(pattern,
+                        ng.name() + " mer=" + mer + " unexpected " + row.dfsCode());
+                assertEquals(pattern.ceuBound(), row.bound(), EPS,
+                        ng.name() + " mer=" + mer + " CEU bound");
             }
         }
         return checked;
@@ -325,27 +338,31 @@ class MgSmallGraphBruteForceTest {
                     new MgHUSM.Config(1_000_000_000, mer, false, true, maxM, maxV,
                             MgBoundType.EU));
             Map<String, MgHUSM.Row> byCode = new HashMap<>();
-            for (MgHUSM.Row r : top.rows) byCode.put(r.code().key(), r);
-            for (MgHUSM.Row r : top.rows) {
-                if (r.code().size() <= 1) continue;
-                MgHUSM.Row parent = byCode.get(r.code().parentKey());
+            for (MgHUSM.Row row : top.rows) byCode.put(row.dfsCode().key(), row);
+            for (MgHUSM.Row row : top.rows) {
+                if (row.dfsCode().size() <= 1) continue;
+                MgHUSM.Row parent = byCode.get(row.dfsCode().parentKey());
                 if (parent == null) continue;
-                assertTrue(r.bound() <= parent.bound() + EPS,
+                assertTrue(row.bound() <= parent.bound() + EPS,
                         ng.name() + " mer=" + mer + " EU(child)>parent: "
-                                + r.code() + " vs " + parent.code());
+                                + row.dfsCode() + " vs " + parent.dfsCode());
                 edges++;
             }
         }
         return edges;
     }
 
-    private static MgHUSM.Row findPattern(MgHUSM.Result res, int type, int s, int m, double u) {
-        for (MgHUSM.Row r : res.rows) {
-            if (r.s() != s || r.m() != m || Math.abs(r.u() - u) > EPS) continue;
-            if (r.code().labels().length != 2) continue;
-            for (MgEdge e : r.code().patternEdges()) {
-                for (VecLabel.Comp c : e.le().comps()) {
-                    if (c.type() == type && c.mult() == 1) return r;
+    private static MgHUSM.Row findPattern(MgHUSM.Result res, int type, int support,
+                                          int multiplicity, double utility) {
+        for (MgHUSM.Row row : res.rows) {
+            if (row.support() != support || row.multiplicity() != multiplicity
+                    || Math.abs(row.utility() - utility) > EPS) {
+                continue;
+            }
+            if (row.dfsCode().labels().length != 2) continue;
+            for (MgEdge edge : row.dfsCode().patternEdges()) {
+                for (VecLabel.Comp component : edge.edgeLabel().components()) {
+                    if (component.type() == type && component.multiplicity() == 1) return row;
                 }
             }
         }
@@ -355,12 +372,12 @@ class MgSmallGraphBruteForceTest {
     // ------------------------------------------------------------------ core check
 
     private static void assertGraphMatchesOracle(String name, MultiGraph g, int mer) {
-        assertGraphMatchesOracle(name, g, mer, g.allWeightsFlat().length, g.n());
+        assertGraphMatchesOracle(name, g, mer, g.allWeightsFlat().length, g.vertexCount());
     }
 
     private static void assertGraphMatchesOracle(String name, MultiGraph g, int mer,
                                                  int maxM, int maxV) {
-        String ctx = name + " mer=" + mer + " (n=" + g.n() + ", edges="
+        String ctx = name + " mer=" + mer + " (n=" + g.vertexCount() + ", edges="
                 + g.allWeightsFlat().length + ", capM=" + maxM + ", capV=" + maxV + ")";
 
         Map<String, OraclePattern> expected = oraclePatterns(g, mer, maxM, maxV);
@@ -369,14 +386,15 @@ class MgSmallGraphBruteForceTest {
                 new MgHUSM.Config(1_000_000_000, mer, false, true, maxM, maxV));
         Map<String, MgHUSM.Row> actual = new HashMap<>();
         Set<String> codeKeys = new HashSet<>();
-        for (MgHUSM.Row r : full.rows) {
-            assertTrue(codeKeys.add(r.code().key()), ctx + " duplicate canonical code " + r.code());
-            assertTrue(MgMinCode.isMin(r.code()), ctx + " non-min code " + r.code());
-            if (r.s() == 0) continue;
-            if (r.m() > maxM || r.code().nVertices() > maxV) continue;
-            String key = abstractKey(r.code().labels(), r.code().patternEdges());
-            MgHUSM.Row prev = actual.put(key, r);
-            assertNull(prev, ctx + " duplicate abstract pattern " + key);
+        for (MgHUSM.Row row : full.rows) {
+            assertTrue(codeKeys.add(row.dfsCode().key()),
+                    ctx + " duplicate canonical code " + row.dfsCode());
+            assertTrue(MgMinCode.isMin(row.dfsCode()), ctx + " non-min code " + row.dfsCode());
+            if (row.support() == 0) continue;
+            if (row.multiplicity() > maxM || row.dfsCode().nVertices() > maxV) continue;
+            String key = abstractKey(row.dfsCode().labels(), row.dfsCode().patternEdges());
+            MgHUSM.Row previous = actual.put(key, row);
+            assertNull(previous, ctx + " duplicate abstract pattern " + key);
         }
 
         assertEquals(expected.keySet(), actual.keySet(), ctx + " pattern set mismatch"
@@ -385,14 +403,15 @@ class MgSmallGraphBruteForceTest {
                 ctx + " layer counts mismatch");
 
         for (String key : expected.keySet()) {
-            OraclePattern e = expected.get(key);
-            MgHUSM.Row r = actual.get(key);
-            String pctx = ctx + " pattern=" + e.code();
-            assertEquals(e.s(), r.s(), pctx + " s");
-            assertEquals(e.m(), r.m(), pctx + " m");
-            assertEquals(e.u(), r.u(), EPS, pctx + " u");
-            assertEquals(e.ivu(), r.bound(), EPS, pctx + " ivu");
-            assertTrue(e.u() <= e.ivu() + EPS, pctx + " u>IVU");
+            OraclePattern expectedPattern = expected.get(key);
+            MgHUSM.Row row = actual.get(key);
+            String context = ctx + " pattern=" + expectedPattern.dfsCode();
+            assertEquals(expectedPattern.support(), row.support(), context + " s");
+            assertEquals(expectedPattern.multiplicity(), row.multiplicity(), context + " m");
+            assertEquals(expectedPattern.utility(), row.utility(), EPS, context + " u");
+            assertEquals(expectedPattern.ivuBound(), row.bound(), EPS, context + " ivu");
+            assertTrue(expectedPattern.utility() <= expectedPattern.ivuBound() + EPS,
+                    context + " u>IVU");
         }
 
         // Top-K with an unambiguous threshold (no near-tie at K/K+1).
@@ -424,51 +443,58 @@ class MgSmallGraphBruteForceTest {
     // ------------------------------------------------------------------ oracle
 
     private static Map<String, OraclePattern> oraclePatterns(MultiGraph g, int mer) {
-        return oraclePatterns(g, mer, g.allWeightsFlat().length, g.n());
+        return oraclePatterns(g, mer, g.allWeightsFlat().length, g.vertexCount());
     }
 
     private static Map<String, OraclePattern> oraclePatterns(MultiGraph g, int mer,
                                                              int maxM, int maxV) {
-        Map<String, OraclePattern> out = new LinkedHashMap<>();
-        for (MgBruteForce.Pattern p : MgBruteForce.enumeratePatterns(g, maxM, maxV)) {
-            List<MgEdge> raw = bfPatternEdges(p);
-            if (p.labels.length > maxV) continue;
-            String key = abstractKey(p.labels, raw);
-            if (out.containsKey(key)) continue;
+        Map<String, OraclePattern> patterns = new LinkedHashMap<>();
+        for (MgBruteForce.Pattern pattern : MgBruteForce.enumeratePatterns(g, maxM, maxV)) {
+            List<MgEdge> rawEdges = bfPatternEdges(pattern);
+            if (pattern.labels.length > maxV) continue;
+            String key = abstractKey(pattern.labels, rawEdges);
+            if (patterns.containsKey(key)) continue;
 
             // MER is anchored at pattern vertex 0; evaluate the canonical root numbering.
-            MgDFSCode anchored = MgDFSCode.of(MgMinCode.minCodeOf(p.labels, raw));
-            MgBruteForce.EvalExt e = MgBruteForce.evaluateExt(g, toBfPattern(anchored), mer);
-            if (e.s() == 0) continue;
-            out.put(key, new OraclePattern(anchored, e.s(), e.m(), e.u(), e.ivu(), e.eu(),
-                    e.ceu(), key));
+            MgDFSCode anchored = MgDFSCode.of(MgMinCode.minCodeOf(pattern.labels, rawEdges));
+            MgBruteForce.EvalExt evaluation =
+                    MgBruteForce.evaluateExt(g, toBfPattern(anchored), mer);
+            if (evaluation.support() == 0) continue;
+            patterns.put(key, new OraclePattern(anchored, evaluation.support(),
+                    evaluation.multiplicity(), evaluation.utility(), evaluation.ivuBound(),
+                    evaluation.euBound(), evaluation.ceuBound(), key));
         }
-        return out;
+        return patterns;
     }
 
     /** Largest K &lt;= preferred whose K-th and (K+1)-th utilities are clearly distinct. */
     private static int chooseUnambiguousTopK(Collection<OraclePattern> patterns, int preferred) {
-        List<Double> us = new ArrayList<>();
-        for (OraclePattern p : patterns) us.add(p.u());
-        us.sort(Comparator.reverseOrder());
-        if (us.isEmpty()) return 0;
-        int max = Math.min(preferred, us.size());
-        for (int k = max; k >= 1; k--) {
-            if (k == us.size() || Math.abs(us.get(k - 1) - us.get(k)) > 1e-6) return k;
+        List<Double> utilities = new ArrayList<>();
+        for (OraclePattern pattern : patterns) utilities.add(pattern.utility());
+        utilities.sort(Comparator.reverseOrder());
+        if (utilities.isEmpty()) return 0;
+        int largestCandidate = Math.min(preferred, utilities.size());
+        for (int k = largestCandidate; k >= 1; k--) {
+            if (k == utilities.size()
+                    || Math.abs(utilities.get(k - 1) - utilities.get(k)) > 1e-6) {
+                return k;
+            }
         }
         return 0;
     }
 
     private static Map<String, Double> expectedTop(Collection<OraclePattern> patterns, int k) {
-        List<Double> us = new ArrayList<>();
-        for (OraclePattern p : patterns) us.add(p.u());
-        us.sort(Comparator.reverseOrder());
-        double theta = us.size() <= k ? 0.0 : us.get(k - 1);
-        Map<String, Double> out = new LinkedHashMap<>();
-        for (OraclePattern p : patterns) {
-            if (p.u() > 0 && p.u() >= theta) out.put(p.code().key(), p.u());
+        List<Double> utilities = new ArrayList<>();
+        for (OraclePattern pattern : patterns) utilities.add(pattern.utility());
+        utilities.sort(Comparator.reverseOrder());
+        double threshold = utilities.size() <= k ? 0.0 : utilities.get(k - 1);
+        Map<String, Double> top = new LinkedHashMap<>();
+        for (OraclePattern pattern : patterns) {
+            if (pattern.utility() > 0 && pattern.utility() >= threshold) {
+                top.put(pattern.dfsCode().key(), pattern.utility());
+            }
         }
-        return out;
+        return top;
     }
 
     private static void assertSameUtilities(Map<String, Double> expected, Map<String, Double> actual,
@@ -479,19 +505,21 @@ class MgSmallGraphBruteForceTest {
     }
 
     private static Map<String, Integer> layerCountsOracle(Collection<OraclePattern> patterns) {
-        Map<String, Integer> out = new TreeMap<>();
-        for (OraclePattern p : patterns) {
-            out.merge(p.nVertices() + "v:" + p.m() + "m", 1, Integer::sum);
+        Map<String, Integer> counts = new TreeMap<>();
+        for (OraclePattern pattern : patterns) {
+            counts.merge(pattern.nVertices() + "v:" + pattern.multiplicity() + "m", 1,
+                    Integer::sum);
         }
-        return out;
+        return counts;
     }
 
     private static Map<String, Integer> layerCountsRows(Collection<MgHUSM.Row> rows) {
-        Map<String, Integer> out = new TreeMap<>();
-        for (MgHUSM.Row r : rows) {
-            out.merge(r.code().nVertices() + "v:" + r.m() + "m", 1, Integer::sum);
+        Map<String, Integer> counts = new TreeMap<>();
+        for (MgHUSM.Row row : rows) {
+            counts.merge(row.dfsCode().nVertices() + "v:" + row.multiplicity() + "m", 1,
+                    Integer::sum);
         }
-        return out;
+        return counts;
     }
 
     // ------------------------------------------------------------------ graph fixtures
@@ -539,57 +567,68 @@ class MgSmallGraphBruteForceTest {
     // ------------------------------------------------------------------ helpers
 
     private static MgBruteForce.Pattern toBfPattern(MgDFSCode code) {
-        Map<MgBruteForce.PatKey, Integer> k = new HashMap<>();
-        for (MgEdge e : code.patternEdges()) {
-            int lo = Math.min(e.a(), e.b()), hi = Math.max(e.a(), e.b());
-            for (VecLabel.Comp c : e.le().comps()) {
-                k.merge(new MgBruteForce.PatKey(lo, hi, c.type()), c.mult(), Integer::sum);
+        Map<MgBruteForce.PatKey, Integer> typeMultiplicities = new HashMap<>();
+        for (MgEdge edge : code.patternEdges()) {
+            int lowVertex = Math.min(edge.fromVertex(), edge.toVertex());
+            int highVertex = Math.max(edge.fromVertex(), edge.toVertex());
+            for (VecLabel.Comp component : edge.edgeLabel().components()) {
+                typeMultiplicities.merge(
+                        new MgBruteForce.PatKey(lowVertex, highVertex, component.type()),
+                        component.multiplicity(), Integer::sum);
             }
         }
-        return new MgBruteForce.Pattern(code.labels(), k);
+        return new MgBruteForce.Pattern(code.labels(), typeMultiplicities);
     }
 
-    private static List<MgEdge> bfPatternEdges(MgBruteForce.Pattern p) {
-        List<MgEdge> out = new ArrayList<>();
-        for (Map.Entry<long[], Map<Integer, Integer>> e : p.pairsRaw().entrySet()) {
-            int a = (int) e.getKey()[0], b = (int) e.getKey()[1];
-            List<VecLabel.Comp> comps = new ArrayList<>();
-            for (Map.Entry<Integer, Integer> tm : e.getValue().entrySet()) {
-                comps.add(new VecLabel.Comp(tm.getKey(), tm.getValue()));
+    private static List<MgEdge> bfPatternEdges(MgBruteForce.Pattern pattern) {
+        List<MgEdge> edges = new ArrayList<>();
+        for (Map.Entry<long[], Map<Integer, Integer>> entry : pattern.pairsRaw().entrySet()) {
+            int fromVertex = (int) entry.getKey()[0];
+            int toVertex = (int) entry.getKey()[1];
+            List<VecLabel.Comp> components = new ArrayList<>();
+            for (Map.Entry<Integer, Integer> typeCount : entry.getValue().entrySet()) {
+                components.add(new VecLabel.Comp(typeCount.getKey(), typeCount.getValue()));
             }
-            out.add(new MgEdge(a, b, VecLabel.of(comps)));
+            edges.add(new MgEdge(fromVertex, toVertex, VecLabel.of(components)));
         }
-        return out;
+        return edges;
     }
 
     /** Canonical key under all vertex permutations, independent of MgMinCode. */
     private static String abstractKey(int[] labels, List<MgEdge> edges) {
-        int n = labels.length;
-        int[] perm = new int[n];
-        for (int i = 0; i < n; i++) perm[i] = i;
+        int vertexCount = labels.length;
+        int[] permutation = new int[vertexCount];
+        for (int vertex = 0; vertex < vertexCount; vertex++) permutation[vertex] = vertex;
         String best = null;
         do {
-            int[] lab = new int[n];
-            for (int old = 0; old < n; old++) lab[perm[old]] = labels[old];
-            List<String> es = new ArrayList<>();
-            for (MgEdge e : edges) {
-                int a = perm[e.a()], b = perm[e.b()];
-                int lo = Math.min(a, b), hi = Math.max(a, b);
-                es.add(lo + "," + hi + "," + canonLe(e.le()));
+            int[] permutedLabels = new int[vertexCount];
+            for (int vertex = 0; vertex < vertexCount; vertex++) {
+                permutedLabels[permutation[vertex]] = labels[vertex];
             }
-            java.util.Collections.sort(es);
-            String cand = java.util.Arrays.toString(lab) + "|" + String.join(";", es);
-            if (best == null || cand.compareTo(best) < 0) best = cand;
-        } while (nextPermutation(perm));
+            List<String> encodedEdges = new ArrayList<>();
+            for (MgEdge edge : edges) {
+                int fromVertex = permutation[edge.fromVertex()];
+                int toVertex = permutation[edge.toVertex()];
+                int lowVertex = Math.min(fromVertex, toVertex);
+                int highVertex = Math.max(fromVertex, toVertex);
+                encodedEdges.add(lowVertex + "," + highVertex + ","
+                        + canonLe(edge.edgeLabel()));
+            }
+            java.util.Collections.sort(encodedEdges);
+            String candidate = java.util.Arrays.toString(permutedLabels) + "|"
+                    + String.join(";", encodedEdges);
+            if (best == null || candidate.compareTo(best) < 0) best = candidate;
+        } while (nextPermutation(permutation));
         return best;
     }
 
-    private static String canonLe(VecLabel le) {
-        StringBuilder sb = new StringBuilder();
-        for (VecLabel.Comp c : le.comps()) {
-            sb.append(c.type()).append(':').append(c.mult()).append(',');
+    private static String canonLe(VecLabel edgeLabel) {
+        StringBuilder text = new StringBuilder();
+        for (VecLabel.Comp component : edgeLabel.components()) {
+            text.append(component.type()).append(':').append(component.multiplicity())
+                    .append(',');
         }
-        return sb.toString();
+        return text.toString();
     }
 
     private static boolean nextPermutation(int[] a) {

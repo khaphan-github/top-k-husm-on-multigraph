@@ -76,7 +76,10 @@ public final class MgTestGraphs {
         int[] vlabel = new int[n];
         for (int i = 0; i < n; i++) vlabel[perm[i]] = p.labels()[i];
         List<MgEdge> edges = new ArrayList<>();
-        for (MgEdge e : p.edges()) edges.add(new MgEdge(perm[e.a()], perm[e.b()], e.le()));
+        for (MgEdge edge : p.edges()) {
+            edges.add(new MgEdge(perm[edge.fromVertex()], perm[edge.toVertex()],
+                    edge.edgeLabel()));
+        }
         return new Pattern(vlabel, edges);
     }
 

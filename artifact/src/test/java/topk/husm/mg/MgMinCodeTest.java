@@ -34,9 +34,9 @@ class MgMinCodeTest {
         List<MgEdge> edges = List.of(new MgEdge(0, 1, le));
         List<MgEdgeTuple> code = MgMinCode.minCodeOf(new int[] {1, 2}, edges);
         assertEquals(List.of(new MgEdgeTuple(0, 1, 1, le, 2)), code);
-        assertEquals(2, code.get(0).le().nComps());
-        assertEquals(3, code.get(0).le().comp(0).type());
-        assertEquals(2, code.get(0).le().comp(0).mult());
+        assertEquals(2, code.get(0).edgeLabel().componentCount());
+        assertEquals(3, code.get(0).edgeLabel().component(0).type());
+        assertEquals(2, code.get(0).edgeLabel().component(0).multiplicity());
 
         // swapped orientation must be non-minimal
         assertFalse(MgMinCode.isMin(MgDFSCode.single(new MgEdgeTuple(0, 1, 2, le, 1))));

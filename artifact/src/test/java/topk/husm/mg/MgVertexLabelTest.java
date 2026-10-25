@@ -27,9 +27,9 @@ class MgVertexLabelTest {
         MgGraphLoader.Loaded c = MgGraphLoader.load(
                 dir.resolve("path.txt"), 5, VertexLabelMode.RANDOM, 43);
 
-        assertArrayEquals(a.vlabel(), b.vlabel());
-        assertFalse(java.util.Arrays.equals(a.vlabel(), c.vlabel()));
-        for (int label : a.vlabel()) {
+        assertArrayEquals(a.vertexLabels(), b.vertexLabels());
+        assertFalse(java.util.Arrays.equals(a.vertexLabels(), c.vertexLabels()));
+        for (int label : a.vertexLabels()) {
             assertTrue(label >= 0 && label < 5, "label outside [0,5): " + label);
         }
     }
@@ -39,7 +39,7 @@ class MgVertexLabelTest {
         writePath(dir);
         MgGraphLoader.Loaded l = MgGraphLoader.load(
                 dir.resolve("path.txt"), 2, VertexLabelMode.DEGREE, 42);
-        assertArrayEquals(new int[] {0, 0, 1, 1, 0}, l.vlabel());
+        assertArrayEquals(new int[] {0, 0, 1, 1, 0}, l.vertexLabels());
     }
 
     @Test
@@ -50,7 +50,7 @@ class MgVertexLabelTest {
         MultiGraph degree = MgGraphLoader.build(
                 dir.resolve("path.txt"), 3, 42, "gaussian", VertexLabelMode.DEGREE);
 
-        assertEquals(degree.n(), random.n());
+        assertEquals(degree.vertexCount(), random.vertexCount());
         assertArrayEquals(degree.allWeightsFlat(), random.allWeightsFlat());
     }
 

@@ -20,258 +20,304 @@ public final class MgBruteForce {
     private MgBruteForce() {
     }
 
-    public record PatKey(int a, int b, int t) implements Comparable<PatKey> {
+    public record PatKey(int endpointA, int endpointB, int type) implements Comparable<PatKey> {
         public PatKey {
-            if (a >= b) throw new IllegalArgumentException("need a<b, got " + a + "," + b);
+            if (endpointA >= endpointB) {
+                throw new IllegalArgumentException(
+                        "need endpointA<endpointB, got " + endpointA + "," + endpointB);
+            }
         }
 
         @Override
-        public int compareTo(PatKey o) {
-            if (a != o.a) return Integer.compare(a, o.a);
-            if (b != o.b) return Integer.compare(b, o.b);
-            return Integer.compare(t, o.t);
+        public int compareTo(PatKey other) {
+            if (endpointA != other.endpointA) return Integer.compare(endpointA, other.endpointA);
+            if (endpointB != other.endpointB) return Integer.compare(endpointB, other.endpointB);
+            return Integer.compare(type, other.type);
         }
     }
 
-    /** Pattern vertex labels plus (a,b,t) multiplicities, a&lt;b. */
+    /** Pattern vertex labels plus (endpointA,endpointB,type) multiplicities, endpointA&lt;endpointB. */
     public static final class Pattern {
         final int[] labels;
-        final Map<PatKey, Integer> k;
+        final Map<PatKey, Integer> typeMultiplicities;
 
-        public Pattern(int[] labels, Map<PatKey, Integer> k) {
+        public Pattern(int[] labels, Map<PatKey, Integer> typeMultiplicities) {
             this.labels = labels;
-            this.k = new TreeMap<>(k);
+            this.typeMultiplicities = new TreeMap<>(typeMultiplicities);
         }
 
-        public int m() {
-            int m = 0;
-            for (int v : k.values()) m += v;
-            return m;
+        /** Total edge multiplicity m(P). */
+        public int multiplicity() {
+            int total = 0;
+            for (int count : typeMultiplicities.values()) total += count;
+            return total;
         }
 
-        /** (a,b) -> {type:mult}. */
+        /** (endpointA,endpointB) -> {type: multiplicity}. */
         Map<long[], Map<Integer, Integer>> pairsRaw() {
-            Map<Long, Map<Integer, Integer>> byPair = new HashMap<>();
-            for (Map.Entry<PatKey, Integer> e : k.entrySet()) {
-                byPair.computeIfAbsent(pk(e.getKey().a(), e.getKey().b()), kk -> new HashMap<>())
-                        .put(e.getKey().t(), e.getValue());
+            Map<Long, Map<Integer, Integer>> countsByPair = new HashMap<>();
+            for (Map.Entry<PatKey, Integer> entry : typeMultiplicities.entrySet()) {
+                PatKey key = entry.getKey();
+                countsByPair.computeIfAbsent(pk(key.endpointA(), key.endpointB()),
+                                ignored -> new HashMap<>())
+                        .put(key.type(), entry.getValue());
             }
-            Map<long[], Map<Integer, Integer>> out = new HashMap<>();
-            for (Map.Entry<Long, Map<Integer, Integer>> e : byPair.entrySet()) {
-                out.put(new long[] {e.getKey() >> 32, e.getKey() & 0xffffffffL}, e.getValue());
+            Map<long[], Map<Integer, Integer>> pairs = new HashMap<>();
+            for (Map.Entry<Long, Map<Integer, Integer>> entry : countsByPair.entrySet()) {
+                pairs.put(new long[] {entry.getKey() >> 32, entry.getKey() & 0xffffffffL},
+                        entry.getValue());
             }
-            return out;
+            return pairs;
         }
 
         String key() {
-            StringBuilder sb = new StringBuilder();
-            for (int l : labels) sb.append(l).append(',');
-            sb.append('|');
-            for (Map.Entry<PatKey, Integer> e : k.entrySet()) {
-                sb.append(e.getKey().a()).append('-').append(e.getKey().b()).append('-')
-                        .append(e.getKey().t()).append(':').append(e.getValue()).append(';');
+            StringBuilder text = new StringBuilder();
+            for (int label : labels) text.append(label).append(',');
+            text.append('|');
+            for (Map.Entry<PatKey, Integer> entry : typeMultiplicities.entrySet()) {
+                PatKey key = entry.getKey();
+                text.append(key.endpointA()).append('-').append(key.endpointB()).append('-')
+                        .append(key.type()).append(':').append(entry.getValue()).append(';');
             }
-            return sb.toString();
+            return text.toString();
         }
 
-        private static long pk(int a, int b) {
-            return ((long) a << 32) | (b & 0xffffffffL);
+        private static long pk(int endpointA, int endpointB) {
+            return ((long) endpointA << 32) | (endpointB & 0xffffffffL);
         }
     }
 
     /** All injective, label-preserving, MER-valid occurrences (naive backtracking). */
-    static List<int[]> occurrences(MultiGraph g, Pattern p, int mer) {
-        int n = p.labels.length;
+    static List<int[]> occurrences(MultiGraph graph, Pattern pattern, int mer) {
+        int vertexCount = pattern.labels.length;
         // constraints checked when the higher-indexed endpoint is placed
         @SuppressWarnings("unchecked")
-        List<Object[]>[] byHi = new List[n]; // each entry {a, Map<type,mult>}
-        for (int v = 0; v < n; v++) byHi[v] = new ArrayList<>();
-        for (Map.Entry<long[], Map<Integer, Integer>> e : p.pairsRaw().entrySet()) {
-            int a = (int) e.getKey()[0], b = (int) e.getKey()[1];
-            byHi[b].add(new Object[] {a, e.getValue()});
+        List<Object[]>[] constraintsByHigherVertex = new List[vertexCount]; // {endpointA, types}
+        for (int vertex = 0; vertex < vertexCount; vertex++) {
+            constraintsByHigherVertex[vertex] = new ArrayList<>();
         }
-        List<int[]> out = new ArrayList<>();
-        int[] phi = new int[n];
-        rec(g, p, mer, byHi, 0, n, phi, out);
-        return out;
+        for (Map.Entry<long[], Map<Integer, Integer>> entry : pattern.pairsRaw().entrySet()) {
+            int endpointA = (int) entry.getKey()[0];
+            int endpointB = (int) entry.getKey()[1];
+            constraintsByHigherVertex[endpointB].add(new Object[] {endpointA, entry.getValue()});
+        }
+        List<int[]> occurrences = new ArrayList<>();
+        int[] mapping = new int[vertexCount];
+        extendOccurrence(graph, pattern, mer, constraintsByHigherVertex, 0, vertexCount, mapping,
+                occurrences);
+        return occurrences;
     }
 
-    private static void rec(MultiGraph g, Pattern p, int mer, List<Object[]>[] byHi, int v, int n,
-                            int[] phi, List<int[]> out) {
-        if (v == n) {
-            out.add(phi.clone());
+    private static void extendOccurrence(MultiGraph graph, Pattern pattern, int mer,
+                                         List<Object[]>[] constraintsByHigherVertex,
+                                         int patternVertex, int vertexCount, int[] mapping,
+                                         List<int[]> occurrences) {
+        if (patternVertex == vertexCount) {
+            occurrences.add(mapping.clone());
             return;
         }
-        Set<Integer> ball0 = v > 0 ? g.ball(phi[0], mer) : null;
-        for (int x = 0; x < g.n(); x++) {
-            if (g.vlabel(x) != p.labels[v]) continue;
-            boolean already = false;
-            for (int i = 0; i < v; i++) if (phi[i] == x) { already = true; break; }
-            if (already) continue;
-            if (v > 0 && !ball0.contains(x)) continue;
-            boolean ok = true;
-            for (Object[] c : byHi[v]) {
-                int a = (int) c[0];
-                @SuppressWarnings("unchecked")
-                Map<Integer, Integer> tm = (Map<Integer, Integer>) c[1];
-                VecLabel le = VecLabel.of(toComps(tm));
-                if (!g.vecOk(phi[a], x, le)) {
-                    ok = false;
+        Set<Integer> firstBall = patternVertex > 0
+                ? graph.ballVertices(mapping[0], mer) : null;
+        for (int graphVertex = 0; graphVertex < graph.vertexCount(); graphVertex++) {
+            if (graph.vertexLabel(graphVertex) != pattern.labels[patternVertex]) continue;
+            boolean vertexAlreadyUsed = false;
+            for (int mapped = 0; mapped < patternVertex; mapped++) {
+                if (mapping[mapped] == graphVertex) {
+                    vertexAlreadyUsed = true;
                     break;
                 }
             }
-            if (!ok) continue;
-            phi[v] = x;
-            rec(g, p, mer, byHi, v + 1, n, phi, out);
+            if (vertexAlreadyUsed) continue;
+            if (patternVertex > 0 && !firstBall.contains(graphVertex)) continue;
+            boolean compatible = true;
+            for (Object[] constraint : constraintsByHigherVertex[patternVertex]) {
+                int earlierPatternVertex = (int) constraint[0];
+                @SuppressWarnings("unchecked")
+                Map<Integer, Integer> typeCounts = (Map<Integer, Integer>) constraint[1];
+                VecLabel edgeLabel = VecLabel.of(toComps(typeCounts));
+                if (!graph.edgeLabelSatisfied(mapping[earlierPatternVertex], graphVertex,
+                        edgeLabel)) {
+                    compatible = false;
+                    break;
+                }
+            }
+            if (!compatible) continue;
+            mapping[patternVertex] = graphVertex;
+            extendOccurrence(graph, pattern, mer, constraintsByHigherVertex, patternVertex + 1,
+                    vertexCount, mapping, occurrences);
         }
     }
 
-    private static List<VecLabel.Comp> toComps(Map<Integer, Integer> tm) {
-        List<VecLabel.Comp> out = new ArrayList<>();
-        for (Map.Entry<Integer, Integer> e : tm.entrySet()) out.add(new VecLabel.Comp(e.getKey(), e.getValue()));
-        return out;
+    private static List<VecLabel.Comp> toComps(Map<Integer, Integer> typeCounts) {
+        List<VecLabel.Comp> components = new ArrayList<>();
+        for (Map.Entry<Integer, Integer> entry : typeCounts.entrySet()) {
+            components.add(new VecLabel.Comp(entry.getKey(), entry.getValue()));
+        }
+        return components;
     }
 
-    /** External-utility oracle: u = MNI * mean component utility, IVU/EU/CEU from per-root ball maxima. */
-    public record EvalExt(int s, int m, double u, double ivu, double eu, double ceu) {
-        static EvalExt empty(int m) {
-            return new EvalExt(0, m, 0, 0, 0, 0);
+    /** External-utility oracle: u = MNI * mean component utility, IVU/EU/CEU from ball maxima. */
+    public record EvalExt(int support, int multiplicity, double utility,
+                          double ivuBound, double euBound, double ceuBound) {
+        static EvalExt unsupported(int multiplicity) {
+            return new EvalExt(0, multiplicity, 0, 0, 0, 0);
         }
     }
 
-    public static EvalExt evaluateExt(MultiGraph g, Pattern p, int mer) {
-        int m = p.m();
-        List<int[]> occ = occurrences(g, p, mer);
-        if (occ.isEmpty()) return EvalExt.empty(m);
-        int n = p.labels.length;
-        List<Set<Integer>> img = new ArrayList<>(n);
-        for (int v = 0; v < n; v++) {
-            Set<Integer> s = new HashSet<>();
-            for (int[] o : occ) s.add(o[v]);
-            img.add(s);
+    public static EvalExt evaluateExt(MultiGraph graph, Pattern pattern, int mer) {
+        int multiplicity = pattern.multiplicity();
+        List<int[]> occurrences = occurrences(graph, pattern, mer);
+        if (occurrences.isEmpty()) return EvalExt.unsupported(multiplicity);
+        int vertexCount = pattern.labels.length;
+        List<Set<Integer>> images = new ArrayList<>(vertexCount);
+        for (int patternVertex = 0; patternVertex < vertexCount; patternVertex++) {
+            Set<Integer> image = new HashSet<>();
+            for (int[] occurrence : occurrences) image.add(occurrence[patternVertex]);
+            images.add(image);
         }
-        int s = Integer.MAX_VALUE;
-        for (Set<Integer> col : img) s = Math.min(s, col.size());
+        int support = Integer.MAX_VALUE;
+        for (Set<Integer> column : images) support = Math.min(support, column.size());
 
-        // ext(t) = max weight of type t over all pairs
-        Map<Integer, Double> ext = new HashMap<>();
-        for (int x = 0; x < g.n(); x++) {
-            for (int y : g.neighbors(x)) {
+        // externalUtility[type] = max weight of that type over all vertex pairs
+        Map<Integer, Double> externalUtility = new HashMap<>();
+        for (int x = 0; x < graph.vertexCount(); x++) {
+            for (int y : graph.neighbors(x)) {
                 if (x >= y) continue;
-                for (int t : g.distinctTypes()) {
-                    if (g.typeCount(x, y, t) > 0) {
-                        ext.merge(t, g.pairWeight(x, y, VecLabel.of(t, 1)), Math::max);
+                for (int type : graph.distinctTypes()) {
+                    if (graph.parallelEdgeCount(x, y, type) > 0) {
+                        externalUtility.merge(type,
+                                graph.pairWeight(x, y, VecLabel.of(type, 1)), Math::max);
                     }
                 }
             }
         }
 
-        double sumExt = 0;
-        for (Map.Entry<long[], Map<Integer, Integer>> e : p.pairsRaw().entrySet()) {
-            for (Map.Entry<Integer, Integer> tm : e.getValue().entrySet()) {
-                sumExt += (double) tm.getValue() * ext.getOrDefault(tm.getKey(), 0.0);
+        double totalExternalUtility = 0;
+        for (Map.Entry<long[], Map<Integer, Integer>> entry : pattern.pairsRaw().entrySet()) {
+            for (Map.Entry<Integer, Integer> typeCount : entry.getValue().entrySet()) {
+                totalExternalUtility += (double) typeCount.getValue()
+                        * externalUtility.getOrDefault(typeCount.getKey(), 0.0);
             }
         }
-        double u = (double) s * (sumExt / m);
+        double utility = (double) support * (totalExternalUtility / multiplicity);
 
-        int labelI0 = p.labels[0];
-        List<Double> maxAll = new ArrayList<>();
-        List<Double> maxGe = new ArrayList<>();
-        for (int r : img.get(0)) {
-            Set<Integer> ball = g.ball(r, mer);
-            double bestAll = Double.NEGATIVE_INFINITY;
-            double bestGe = Double.NEGATIVE_INFINITY;
+        int firstVertexLabel = pattern.labels[0];
+        List<Double> ballMaxima = new ArrayList<>();
+        List<Double> filteredBallMaxima = new ArrayList<>();
+        for (int ballCenter : images.get(0)) {
+            Set<Integer> ball = graph.ballVertices(ballCenter, mer);
+            double bestExternalUtility = Double.NEGATIVE_INFINITY;
+            double bestExternalUtilityAtLeastLabel = Double.NEGATIVE_INFINITY;
             for (int x : ball) {
-                for (int y : g.neighbors(x)) {
-                    if (x < y && ball.contains(y)) {
-                        double ex = Double.NEGATIVE_INFINITY;
-                        for (int t : g.distinctTypes()) {
-                            if (g.typeCount(x, y, t) > 0) ex = Math.max(ex, ext.getOrDefault(t, 0.0));
+                for (int y : graph.neighbors(x)) {
+                    if (x >= y || !ball.contains(y)) continue;
+                    double edgeExternalUtility = Double.NEGATIVE_INFINITY;
+                    for (int type : graph.distinctTypes()) {
+                        if (graph.parallelEdgeCount(x, y, type) > 0) {
+                            edgeExternalUtility = Math.max(edgeExternalUtility,
+                                    externalUtility.getOrDefault(type, 0.0));
                         }
-                        if (ex > bestAll) bestAll = ex;
-                        if (g.vlabel(x) >= labelI0 && g.vlabel(y) >= labelI0 && ex > bestGe) {
-                            bestGe = ex;
-                        }
+                    }
+                    if (edgeExternalUtility > bestExternalUtility) {
+                        bestExternalUtility = edgeExternalUtility;
+                    }
+                    boolean bothLabelsCount = graph.vertexLabel(x) >= firstVertexLabel
+                            && graph.vertexLabel(y) >= firstVertexLabel;
+                    if (bothLabelsCount
+                            && edgeExternalUtility > bestExternalUtilityAtLeastLabel) {
+                        bestExternalUtilityAtLeastLabel = edgeExternalUtility;
                     }
                 }
             }
-            if (bestAll != Double.NEGATIVE_INFINITY) maxAll.add(bestAll);
-            if (bestGe != Double.NEGATIVE_INFINITY) maxGe.add(bestGe);
+            if (bestExternalUtility != Double.NEGATIVE_INFINITY) {
+                ballMaxima.add(bestExternalUtility);
+            }
+            if (bestExternalUtilityAtLeastLabel != Double.NEGATIVE_INFINITY) {
+                filteredBallMaxima.add(bestExternalUtilityAtLeastLabel);
+            }
         }
-        double ivu = 0;
-        for (double v : maxAll) ivu += v;
-        double eu = topSum(maxAll, s);
-        double ceu = topSum(maxGe, s);
-        return new EvalExt(s, m, u, ivu, eu, ceu);
+        double ivuBound = 0;
+        for (double maximum : ballMaxima) ivuBound += maximum;
+        double euBound = topSum(ballMaxima, support);
+        double ceuBound = topSum(filteredBallMaxima, support);
+        return new EvalExt(support, multiplicity, utility, ivuBound, euBound, ceuBound);
     }
 
-    private static double topSum(List<Double> values, int k) {
-        if (k <= 0 || values.isEmpty()) return 0;
-        List<Double> copy = new ArrayList<>(values);
-        copy.sort(java.util.Comparator.reverseOrder());
-        double sum = 0;
-        for (int i = 0; i < Math.min(k, copy.size()); i++) sum += copy.get(i);
-        return sum;
+    private static double topSum(List<Double> values, int topCount) {
+        if (topCount <= 0 || values.isEmpty()) return 0;
+        List<Double> sorted = new ArrayList<>(values);
+        sorted.sort(java.util.Comparator.reverseOrder());
+        double total = 0;
+        for (int index = 0; index < Math.min(topCount, sorted.size()); index++) {
+            total += sorted.get(index);
+        }
+        return total;
     }
 
     // ---- independent abstract-pattern enumeration ----
 
     /** All connected abstract patterns with m&lt;=K and at most maxv vertices. */
-    public static List<Pattern> enumeratePatterns(MultiGraph g, int k, int maxv) {
-        List<Integer> labels = g.distinctVertexLabels();
-        List<Integer> types = g.distinctTypes();
+    public static List<Pattern> enumeratePatterns(MultiGraph graph, int k, int maxv) {
+        List<Integer> labels = graph.distinctVertexLabels();
+        List<Integer> types = graph.distinctTypes();
         Map<String, Pattern> seen = new HashMap<>();
         List<Pattern> frontier = new ArrayList<>();
-        for (int l0 : labels) {
-            for (int l1 : labels) {
-                for (int t : types) {
-                    Map<PatKey, Integer> kk = new HashMap<>();
-                    kk.put(new PatKey(0, 1, t), 1);
-                    Pattern p = new Pattern(new int[] {l0, l1}, kk);
-                    if (seen.putIfAbsent(p.key(), p) == null) frontier.add(p);
+        for (int labelLow : labels) {
+            for (int labelHigh : labels) {
+                for (int type : types) {
+                    Map<PatKey, Integer> typeMultiplicities = new HashMap<>();
+                    typeMultiplicities.put(new PatKey(0, 1, type), 1);
+                    Pattern pattern = new Pattern(new int[] {labelLow, labelHigh},
+                            typeMultiplicities);
+                    if (seen.putIfAbsent(pattern.key(), pattern) == null) frontier.add(pattern);
                 }
             }
         }
         while (!frontier.isEmpty()) {
-            List<Pattern> next = new ArrayList<>();
-            for (Pattern p : frontier) {
-                for (Pattern q : extensions(p, labels, types, k, maxv)) {
-                    if (seen.putIfAbsent(q.key(), q) == null) next.add(q);
+            List<Pattern> nextFrontier = new ArrayList<>();
+            for (Pattern pattern : frontier) {
+                for (Pattern extension : extensions(pattern, labels, types, k, maxv)) {
+                    if (seen.putIfAbsent(extension.key(), extension) == null) {
+                        nextFrontier.add(extension);
+                    }
                 }
             }
-            frontier = next;
+            frontier = nextFrontier;
         }
         return new ArrayList<>(seen.values());
     }
 
-    private static List<Pattern> extensions(Pattern p, List<Integer> labels, List<Integer> types,
-                                            int k, int maxv) {
-        List<Pattern> res = new ArrayList<>();
-        if (p.m() + 1 > k) return res;
-        int n = p.labels.length;
-        if (n < maxv) {
-            for (int a = 0; a < n; a++) {
-                for (int l : labels) {
-                    for (int t : types) {
-                        int[] newLabels = java.util.Arrays.copyOf(p.labels, n + 1);
-                        newLabels[n] = l;
-                        Map<PatKey, Integer> kk = new HashMap<>(p.k);
-                        kk.put(new PatKey(a, n, t), 1);
-                        res.add(new Pattern(newLabels, kk));
+    private static List<Pattern> extensions(Pattern pattern, List<Integer> labels,
+                                            List<Integer> types, int k, int maxv) {
+        List<Pattern> extensions = new ArrayList<>();
+        if (pattern.multiplicity() + 1 > k) return extensions;
+        int vertexCount = pattern.labels.length;
+        if (vertexCount < maxv) {
+            for (int attachVertex = 0; attachVertex < vertexCount; attachVertex++) {
+                for (int newLabel : labels) {
+                    for (int type : types) {
+                        int[] newLabels = java.util.Arrays.copyOf(pattern.labels,
+                                vertexCount + 1);
+                        newLabels[vertexCount] = newLabel;
+                        Map<PatKey, Integer> typeMultiplicities =
+                                new HashMap<>(pattern.typeMultiplicities);
+                        typeMultiplicities.put(new PatKey(attachVertex, vertexCount, type), 1);
+                        extensions.add(new Pattern(newLabels, typeMultiplicities));
                     }
                 }
             }
         }
-        for (int a = 0; a < n; a++) {
-            for (int b = a + 1; b < n; b++) {
-                for (int t : types) {
-                    Map<PatKey, Integer> kk = new HashMap<>(p.k);
-                    PatKey key = new PatKey(a, b, t);
-                    kk.merge(key, 1, Integer::sum);
-                    res.add(new Pattern(p.labels.clone(), kk));
+        for (int endpointA = 0; endpointA < vertexCount; endpointA++) {
+            for (int endpointB = endpointA + 1; endpointB < vertexCount; endpointB++) {
+                for (int type : types) {
+                    Map<PatKey, Integer> typeMultiplicities =
+                            new HashMap<>(pattern.typeMultiplicities);
+                    typeMultiplicities.merge(new PatKey(endpointA, endpointB, type), 1,
+                            Integer::sum);
+                    extensions.add(new Pattern(pattern.labels.clone(), typeMultiplicities));
                 }
             }
         }
-        return res;
+        return extensions;
     }
 }
