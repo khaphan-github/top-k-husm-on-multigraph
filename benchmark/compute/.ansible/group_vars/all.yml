@@ -1,0 +1,53 @@
+---
+# Everything the benchmark runner needs on the box
+# (see benchmark/compute/vps/README.MD and benchmark/runner/run_benchmark.sh).
+benchmark_packages:
+  - openjdk-17-jdk-headless # JDK 17: artifact/pom.xml sets maven.compiler.release=17
+  - jq                      # run_benchmark.sh: CSV / mem-logger parsing
+  - rsync                   # dataset, jar and results transfer
+  - util-linux              # flock (log lock) + setsid (detached campaign)
+  - python3                 # benchmark/runner/config.py
+  - python3-yaml            # PyYAML used by config.py
+  - tmux                    # watch long campaigns without dropping the SSH session
+
+# Java major version the jar is built for; the playbook asserts it on the host.
+benchmark_java_major: "17"
+
+# Directory skeleton expected by the runner. Empty dirs are enough: the dataset,
+# the jar and the runner scripts are pushed by rsync afterwards.
+# Set to false to install packages only.
+benchmark_create_dirs: true
+benchmark_project_root: /root/top-k-husm-mg
+benchmark_dirs:
+  - "{{ benchmark_project_root }}/artifact/target"
+  - "{{ benchmark_project_root }}/benchmark/dataset/formated"
+  - "{{ benchmark_project_root }}/benchmark/runner"
+  - "{{ benchmark_project_root }}/benchmark/results/logs"
+
+# ---------------------------------------------------------------- deploy.yml
+# Repo root on the control node: this file lives in benchmark/compute/.ansible.
+benchmark_local_root: "{{ playbook_dir }}/../../.."
+
+# deploy.yml stops any running campaign and wipes the VPS tree before every
+# sync, so nothing from an older build survives: no stale jar, no old runner, no
+# leftover runs.csv. The tree is rebuilt from benchmark_dirs right after.
+# Set to false to go back to an incremental (resumable) sync.
+benchmark_clean_deploy: true
+# With benchmark_clean_deploy: keep benchmark/results/ so an interrupted
+# campaign resumes instead of starting over.
+benchmark_clean_keep_results: false
+
+# What deploy.yml pushes, relative to the repo root on both sides.
+# A trailing slash copies the contents, not the directory itself.
+benchmark_push:
+  - src: artifact/target/
+    dest: artifact/target/
+    delete: true # drop jars left over from an older build
+  - src: benchmark/runner/
+    dest: benchmark/runner/
+  - src: benchmark/dataset/formated/
+    dest: benchmark/dataset/formated/
+
+# Extra JVM options for the campaign. Empty = use `run.heap` in benchmark.yaml.
+# The jar runs with BENCH_SKIP_BUILD=1, so it is never rebuilt on the VPS.
+benchmark_java_opts: ""

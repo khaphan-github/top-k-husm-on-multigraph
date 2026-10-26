@@ -1,0 +1,104 @@
+---
+# Environment-only provisioning for the benchmark VPS.
+#
+#   ansible-playbook setup-env.yml -k          # -k asks for the SSH password
+#   ansible-playbook setup-env.yml -k --check  # dry run
+#   ansible-playbook setup-env.yml -k --tags verify
+#
+# It installs packages and creates the directory skeleton; it does NOT copy the
+# jar, the datasets or the runner scripts (those go with rsync, see README.MD).
+- name: Set up the benchmark environment
+  hosts: vps
+  gather_facts: true
+
+  tasks:
+    - name: Check that the target runs a Debian/Ubuntu distribution
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: >-
+          {{ inventory_hostname }} is {{ ansible_distribution }}
+          {{ ansible_distribution_version }}; this playbook only supports
+          Debian/Ubuntu (apt).
+        quiet: true
+      tags: [always]
+
+    # Equivalent of `apt install --fix-missing`: clears a half-configured dpkg
+    # state before the real install, otherwise apt can refuse to run.
+    - name: Repair missing/broken dependencies
+      ansible.builtin.command: apt-get -y --fix-broken install
+      register: fix_broken
+      changed_when: false
+      failed_when: false
+      tags: [packages]
+
+    - name: Warn when the repair step could not complete
+      ansible.builtin.debug:
+        msg: "apt-get --fix-broken exited {{ fix_broken.rc }}: {{ fix_broken.stderr | trim }}"
+      when: fix_broken.rc != 0
+      tags: [packages]
+
+    - name: Install the benchmark packages
+      ansible.builtin.apt:
+        name: "{{ benchmark_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+        dpkg_options: force-confdef,force-confold
+        install_recommends: false
+      tags: [packages]
+
+    - name: Create the directory skeleton used by the runner
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ benchmark_dirs }}"
+      when: benchmark_create_dirs | bool
+      tags: [dirs]
+
+    - name: Read the Java version
+      ansible.builtin.command: java -version
+      register: java_version
+      changed_when: false
+      tags: [verify]
+
+    - name: Check that Java matches the version the jar is built for
+      ansible.builtin.assert:
+        that:
+          - java_version.stderr is search('version "' ~ benchmark_java_major ~ '[."]')
+        fail_msg: >-
+          Expected Java {{ benchmark_java_major }}, got:
+          {{ java_version.stderr | trim }}
+        success_msg: "Java {{ benchmark_java_major }} is available"
+        quiet: true
+      tags: [verify]
+
+    - name: Check that PyYAML is importable (benchmark/runner/config.py)
+      ansible.builtin.command: python3 -c "import sys, yaml; print('python', sys.version.split()[0], 'pyyaml', yaml.__version__)"
+      register: pyyaml_check
+      changed_when: false
+      tags: [verify]
+
+    - name: Check the CLI tools the runner depends on
+      ansible.builtin.command: "{{ item }} --version"
+      loop:
+        - jq
+        - rsync
+        - flock
+        - setsid
+      changed_when: false
+      tags: [verify]
+
+    - name: Show the provisioned environment
+      ansible.builtin.debug:
+        msg:
+          - "host  : {{ inventory_hostname }} ({{ ansible_host }})"
+          - "os    : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "cpu   : {{ ansible_processor_vcpus | default('?') }} vCPU"
+          - "mem   : {{ (ansible_memtotal_mb / 1024) | round(1) }} GiB"
+          - "java  : {{ java_version.stderr | regex_search('version .*') | trim }}"
+          - "python: {{ pyyaml_check.stdout | trim }}"
+          - "dirs  : {{ benchmark_project_root }}"
+      tags: [verify]

@@ -1,0 +1,188 @@
+---
+# Push the build + data to the benchmark VPS and start the campaign.
+#
+#   ansible-playbook deploy.yml -k             # wipe + sync, then start the benchmark
+#   ansible-playbook deploy.yml -k --tags sync # wipe + sync only
+#   ansible-playbook deploy.yml -k --tags clean # wipe the VPS tree only
+#   ansible-playbook deploy.yml -k --tags run  # start only (jar already there)
+#
+# Every sync starts from an empty tree (benchmark_clean_deploy in
+# group_vars/all.yml), so no jar, runner or runs.csv from an older build survives.
+#
+# The jar is built on the control node (./benchmark/runner/build_artifact.sh)
+# and started with BENCH_SKIP_BUILD=1, so the VPS needs no Maven toolchain.
+- name: Push build + data and run the benchmark
+  hosts: vps
+  gather_facts: false
+
+  tasks:
+    - name: Check that the control node has everything to push
+      ansible.builtin.stat:
+        path: "{{ benchmark_local_root }}/{{ item }}"
+      loop:
+        - artifact/target
+        - benchmark/runner/run_benchmark.sh
+        - benchmark/dataset/formated
+      delegate_to: localhost
+      register: payload
+      failed_when: not payload.stat.exists
+      tags: [sync]
+
+    - name: Look for a built jar on the control node
+      ansible.builtin.find:
+        paths: "{{ benchmark_local_root }}/artifact/target"
+        patterns: "top-k-husm-mg-*.jar"
+      delegate_to: localhost
+      register: local_jars
+      changed_when: false
+      tags: [sync]
+
+    - name: Fail before syncing when there is no jar
+      ansible.builtin.assert:
+        that: local_jars.matched > 0
+        fail_msg: >-
+          no top-k-husm-mg-*.jar under artifact/target:
+          run ./benchmark/runner/build_artifact.sh first
+        quiet: true
+      tags: [sync]
+
+    # ------------------------------------------------------------- clean slate
+    # A deploy always starts from an empty tree: a stale jar, an old runner or a
+    # leftover runs.csv would silently change what the campaign measures.
+    - name: Check what the VPS still has from a previous deploy
+      ansible.builtin.stat:
+        path: "{{ benchmark_project_root }}/{{ item }}"
+      loop:
+        - .
+        - benchmark/runner/stop_benchmark.sh
+      register: remote_state
+      tags: [clean, sync]
+
+    # Wiping under a live JVM would leave it running on deleted files, so the
+    # previous campaign is stopped first (the script also cleans an unclean stop).
+    - name: Stop a campaign left running by a previous deploy
+      ansible.builtin.command: ./benchmark/runner/stop_benchmark.sh
+      args:
+        chdir: "{{ benchmark_project_root }}"
+      register: stop_previous
+      changed_when: "'not running' not in stop_previous.stdout"
+      when:
+        - benchmark_clean_deploy | bool
+        - remote_state.results[1].stat.exists
+      tags: [clean, sync]
+
+    - name: Remove the whole previous deployment (jar, runner, datasets, results)
+      ansible.builtin.file:
+        path: "{{ benchmark_project_root }}"
+        state: absent
+      when:
+        - benchmark_clean_deploy | bool
+        - not (benchmark_clean_keep_results | bool)
+        - remote_state.results[0].stat.exists
+      tags: [clean, sync]
+
+    - name: Remove the old build, runner and datasets but keep results/
+      ansible.builtin.file:
+        path: "{{ benchmark_project_root }}/{{ item }}"
+        state: absent
+      loop:
+        - artifact
+        - benchmark/runner
+        - benchmark/dataset
+      when:
+        - benchmark_clean_deploy | bool
+        - benchmark_clean_keep_results | bool
+      tags: [clean, sync]
+
+    # rsync only creates the last path element, so the skeleton must exist again
+    # before the push (artifact/target, benchmark/runner, ...).
+    - name: Recreate the directory skeleton
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      loop: "{{ benchmark_dirs }}"
+      when: benchmark_clean_deploy | bool
+      tags: [clean, sync]
+
+    # rsync must log in without a prompt, so make sure the VPS accepts the
+    # control node's key. Idempotent: nothing changes once it is authorized.
+    - name: Look for an SSH key on the control node
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ssh/id_ed25519.pub"
+      delegate_to: localhost
+      register: controller_key
+      tags: [sync]
+
+    - name: Create an ed25519 key when the control node has none
+      ansible.builtin.command:
+        cmd: >-
+          ssh-keygen -t ed25519 -N '' -C ansible-benchmark
+          -f {{ lookup('env', 'HOME') }}/.ssh/id_ed25519
+        creates: "{{ lookup('env', 'HOME') }}/.ssh/id_ed25519"
+      delegate_to: localhost
+      when: not controller_key.stat.exists
+      tags: [sync]
+
+    - name: Authorize the control node key on the VPS
+      ansible.builtin.authorized_key:
+        user: "{{ ansible_user }}"
+        key: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub') }}"
+        state: present
+      tags: [sync]
+
+    - name: Push the jar, the runner and the datasets
+      ansible.builtin.command: >-
+        rsync -az --partial --stats --no-owner --no-group
+        {{ '--delete' if item.delete | default(false) else '' }}
+        --rsh='ssh -o BatchMode=yes'
+        {{ benchmark_local_root }}/{{ item.src }}
+        {{ ansible_user }}@{{ ansible_host }}:{{ benchmark_project_root }}/{{ item.dest }}
+      loop: "{{ benchmark_push }}"
+      loop_control:
+        label: "{{ item.src }}"
+      delegate_to: localhost
+      register: pushed
+      tags: [sync]
+
+    # -a would keep the control node's uid/gid; make the remote tree owned by
+    # the login user instead (rsync --no-owner only affects new files).
+    - name: Normalize ownership of the pushed trees
+      ansible.builtin.file:
+        path: "{{ benchmark_project_root }}/{{ item.dest }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: true
+      loop: "{{ benchmark_push }}"
+      loop_control:
+        label: "{{ item.dest }}"
+      tags: [sync]
+
+    - name: Show what was transferred
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.src }} -> {{ item.item.dest }}:
+          {{ item.stdout_lines[-2:] | join(' | ') }}
+      loop: "{{ pushed.results }}"
+      loop_control:
+        label: "{{ item.item.src }}"
+      tags: [sync]
+
+    - name: Start the benchmark campaign
+      ansible.builtin.command: ./benchmark/runner/run_benchmark.sh
+      args:
+        chdir: "{{ benchmark_project_root }}"
+      environment:
+        BENCH_SKIP_BUILD: "1"
+        BENCH_JAVA_OPTS: "{{ benchmark_java_opts }}"
+      register: campaign
+      changed_when: true
+      tags: [run]
+
+    - name: Report how the campaign was started
+      ansible.builtin.debug:
+        msg: "{{ campaign.stdout_lines }}"
+      tags: [run]
