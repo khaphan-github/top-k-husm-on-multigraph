@@ -1,1 +1,6 @@
 .note
+
+# Python
+__pycache__/
+*.py[cod]
+benchmark/results/*
