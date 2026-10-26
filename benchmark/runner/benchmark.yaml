@@ -1,0 +1,47 @@
+version: 1
+
+run:
+  jar: artifact/target/top-k-husm-mg-0.2.0-SNAPSHOT.jar
+  main: topk.husm.mg.cli.MgBenchOne
+  mugram_main: topk.husm.mg.cli.MgBenchMugram
+  warmup: 1       
+  repeats: 3
+  timeout_sec: 4000 
+  jobs: 1          # số JVM chạy song song (= số core dùng)
+  heap: 3g         # -Xmx cho mỗi JVM
+  output_dir: benchmark/results/08_03
+  run_datasets: []                 # [] = chạy toàn bộ datasets bên dưới; hoặc liệt kê id cụ thể
+  core_ids: [1]
+  # off | error | warn | info | debug | trace ; "" = tắt
+  log_level: ""
+  # off | wall | full
+  profile: ""
+parameters:
+  K: [10,100,200,500,1000]
+  mer: [1, 2, 3, 4]
+  nlabels: [20]
+  label_mode: [random]
+  wdist: [gaussian]
+  ieu_bound: [ivu, eu, ceu]
+  incremental_domains: [false]
+  enable_top_k: [true]     # false = mine every pattern with s > 0 (K and theta pruning ignored)
+  min_util: [null]         # keep only patterns with u >= min_util (null/empty = no threshold)
+  max_m: [null]
+  max_v: [null]
+  mem_logger_ms: [10]      # SPMF-style sampled used-heap peak; 0 = off
+
+datasets:
+  - id: bn-fly-drosophila
+    path: benchmark/dataset/formated/bn-fly-drosophila.txt
+  - id: dblp-multigraph
+    path: benchmark/dataset/formated/dblp-multigraph.txt
+  - id: college-msg
+    path: benchmark/dataset/formated/college-msg.txt
+  - id: email-eu-core-temporal
+    path: benchmark/dataset/formated/email-eu-core-temporal.txt
+  - id: sx-askubuntu
+    path: benchmark/dataset/formated/sx-askubuntu.txt
+  - id: sx-mathoverflow
+    path: benchmark/dataset/formated/sx-mathoverflow.txt
+  - id: sx-superuser
+    path: benchmark/dataset/formated/sx-superuser.txt

@@ -10,6 +10,13 @@
 			"installMaven": "true",
 			"installGradle": "true"
 		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"mechatroner.rainbow-csv"
+			]
+		}
 	}
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
